@@ -15,6 +15,7 @@ CHANNELS = 512  # Max DMX channels
 
 
 class ArtNetController:
+
     def __init__(self, ip, port):
         self.ip = ip
         self.port = port
@@ -33,11 +34,13 @@ class ArtNetController:
         # ArtNet Header
         packet.extend(b'Art-Net\x00')  # Protocol header
         packet.extend(struct.pack('<H', 0x5000))  # OpCode for DMX (0x5000)
-        packet.extend(struct.pack('!H', 14))  # Protocol version (0x000E, big-endian)
+        packet.extend(struct.pack('!H',
+                                  14))  # Protocol version (0x000E, big-endian)
         packet.extend(struct.pack('B', 0))  # Sequence (0 = disabled)
         packet.extend(struct.pack('B', 0))  # Physical port (0 = ignored)
         packet.extend(struct.pack('<H', universe))  # Universe (little endian)
-        packet.extend(struct.pack('!H', len(data)))  # Length of DMX data (big endian)
+        packet.extend(struct.pack(
+            '!H', len(data)))  # Length of DMX data (big endian)
 
         # DMX Data
         packet.extend(data)  # Append DMX data
@@ -53,13 +56,18 @@ class ArtNetController:
         # ArtNet Header
         packet.extend(b'Art-Net\x00')  # Protocol header
         packet.extend(struct.pack('<H', 0x5200))  # OpCode for Sync (0x5200)
-        packet.extend(struct.pack('!H', 14))  # Protocol version (0x000E, big-endian)
+        packet.extend(struct.pack('!H',
+                                  14))  # Protocol version (0x000E, big-endian)
         packet.extend(struct.pack('B', 0))  # Sequence (ignored)
         packet.extend(struct.pack('B', 0))  # Physical port (ignored)
 
         return packet
 
-    def send_dmx(self, base_universe, raster, channels_per_universe=510, universes_per_layer=6):
+    def send_dmx(self,
+                 base_universe,
+                 raster,
+                 channels_per_universe=510,
+                 universes_per_layer=6):
         """
         Send the ArtNet DMX packet via UDP.
         """
@@ -67,15 +75,20 @@ class ArtNetController:
         data = bytearray()
         for z in range(raster.length):
             universe = z * universes_per_layer + base_universe
-            layer = raster.data[z * raster.width * raster.height:(z + 1) * raster.width * raster.height]
+            layer = raster.data[z * raster.width * raster.height:(z + 1) *
+                                raster.width * raster.height]
 
             for rgb in layer:
-                data.extend(struct.pack('B', saturate_u8(rgb.red * raster.brightness)))
-                data.extend(struct.pack('B', saturate_u8(rgb.green * raster.brightness)))
-                data.extend(struct.pack('B', saturate_u8(rgb.blue * raster.brightness)))
+                data.extend(
+                    struct.pack('B', saturate_u8(rgb.red * raster.brightness)))
+                data.extend(
+                    struct.pack('B',
+                                saturate_u8(rgb.green * raster.brightness)))
+                data.extend(
+                    struct.pack('B',
+                                saturate_u8(rgb.blue * raster.brightness)))
 
             while len(data) > 0:
-                print(f"Sending DMX data for Universe {universe}...")
                 dmx_packet = self.create_dmx_packet(
                     universe, data[:channels_per_universe])
                 self.sock.sendto(dmx_packet, (self.ip, self.port))
@@ -124,11 +137,24 @@ def saturate_u8(value):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="ArtNet DMX Transmission with Sync")
-    parser.add_argument("--ip", type=str, default=ARTNET_IP, help="ArtNet controller IP address")
-    parser.add_argument("--port", type=int, default=ARTNET_PORT, help="ArtNet controller port")
-    parser.add_argument("--geometry", type=str, default="20x20x20", help="Raster geometry (e.g., 20x20x20)")
-    parser.add_argument("--brightness", type=float, default=0.05, help="Brightness factor (0.0 to 1.0)")
+    parser = argparse.ArgumentParser(
+        description="ArtNet DMX Transmission with Sync")
+    parser.add_argument("--ip",
+                        type=str,
+                        default=ARTNET_IP,
+                        help="ArtNet controller IP address")
+    parser.add_argument("--port",
+                        type=int,
+                        default=ARTNET_PORT,
+                        help="ArtNet controller port")
+    parser.add_argument("--geometry",
+                        type=str,
+                        default="20x20x20",
+                        help="Raster geometry (e.g., 20x20x20)")
+    parser.add_argument("--brightness",
+                        type=float,
+                        default=0.05,
+                        help="Brightness factor (0.0 to 1.0)")
     args = parser.parse_args()
 
     width, height, length = map(int, args.geometry.split("x"))
@@ -154,9 +180,12 @@ def main():
                         idx = y * raster.width + x + z * raster.width * raster.height
 
                         # Calculate color
-                        red = int(127 * math.sin(0.5 * math.sin(t * 5) * x + z * 0.2 + t * 10) + 128)
-                        green = int(127 * math.sin(0.5 * math.cos(t * 4) * y + z * 0.2 + t * 10) + 128)
-                        blue = int(127 * math.sin(0.5 * math.sin(t * 3) * (x + y + z) + t * 10) + 128)
+                        red = int(127 * math.sin(0.5 * math.sin(t * 5) * x +
+                                                 z * 0.2 + t * 10) + 128)
+                        green = int(127 * math.sin(0.5 * math.cos(t * 4) * y +
+                                                   z * 0.2 + t * 10) + 128)
+                        blue = int(127 * math.sin(0.5 * math.sin(t * 3) *
+                                                  (x + y + z) + t * 10) + 128)
 
                         # Set pixel color
                         raster.data[idx] = RGB(red, green, blue)
@@ -167,4 +196,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

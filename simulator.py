@@ -11,17 +11,17 @@ import threading
 
 class VolumetricDisplay:
 
-    def __init__(self,
-                 width,
-                 height,
-                 length,
-                 ip_address,
-                 port,
+    def __init__(self, width, height, length, ip_address, port,
                  universes_per_layer):
         self.width = width
         self.height = height
         self.length = length
         self.ip_address = ip_address
+
+        # VBO data
+        self.vbo_vertices = None
+        self.vbo_colors = None
+        self.vertex_count = 0
 
         # Track rotation key states
         self.rotation_keys = {
@@ -48,11 +48,17 @@ class VolumetricDisplay:
         pygame.init()
         pygame.display.set_mode((800, 600), DOUBLEBUF | OPENGL)
 
+        # Initialize VBOs
+        self._setup_vbo()
+
         # Setup perspective and lighting
         glEnable(GL_DEPTH_TEST)
         glEnable(GL_LIGHTING)
         glEnable(GL_COLOR_MATERIAL)
         glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE)
+
+        # Set minimal global ambient light
+        glLightModelfv(GL_LIGHT_MODEL_AMBIENT, (1.0, 1.0, 1.0, 1.0))
 
         # Initialize rotation state
         self.rotation_matrix = np.identity(4, dtype=np.float32)
@@ -114,6 +120,28 @@ class VolumetricDisplay:
         glMultMatrixf(self.rotation_matrix)
         glTranslatef(-self.width / 2, -self.height / 2, -self.length / 2)
 
+        # Update and render all cubes using VBO
+        self.update_colors()
+
+        # Enable vertex and color arrays
+        glEnableClientState(GL_VERTEX_ARRAY)
+        glEnableClientState(GL_COLOR_ARRAY)
+
+        # Bind vertex buffer
+        glBindBuffer(GL_ARRAY_BUFFER, self.vbo_vertices)
+        glVertexPointer(3, GL_FLOAT, 0, None)
+
+        # Bind color buffer
+        glBindBuffer(GL_ARRAY_BUFFER, self.vbo_colors)
+        glColorPointer(3, GL_FLOAT, 0, None)
+
+        # Draw all cubes at once
+        glDrawArrays(GL_QUADS, 0, self.vertex_count)
+
+        # Disable vertex and color arrays
+        glDisableClientState(GL_VERTEX_ARRAY)
+        glDisableClientState(GL_COLOR_ARRAY)
+
         # Draw coordinate axes for reference
         glBegin(GL_LINES)
         # X axis in red
@@ -130,53 +158,132 @@ class VolumetricDisplay:
         glVertex3f(0, 0, self.length)
         glEnd()
 
-        # Draw each pixel as a colored cube
+        pygame.display.flip()
+
+    def _setup_vbo(self):
+        """Initialize the VBO with cube geometry for all possible positions"""
+        size = 0.1
+        vertices = []
+        self.color_data = np.zeros(
+            (self.width * self.height * self.length * 24, 3), dtype=np.float32)
+
+        # Generate vertices for each possible cube position
+        for x in range(self.width):
+            for y in range(self.height):
+                for z in range(self.length):
+                    cube_vertices = [
+                        # Front face
+                        x - size,
+                        y - size,
+                        z + size,
+                        x + size,
+                        y - size,
+                        z + size,
+                        x + size,
+                        y + size,
+                        z + size,
+                        x - size,
+                        y + size,
+                        z + size,
+                        # Back face
+                        x + size,
+                        y - size,
+                        z - size,
+                        x - size,
+                        y - size,
+                        z - size,
+                        x - size,
+                        y + size,
+                        z - size,
+                        x + size,
+                        y + size,
+                        z - size,
+                        # Left face
+                        x - size,
+                        y - size,
+                        z - size,
+                        x - size,
+                        y - size,
+                        z + size,
+                        x - size,
+                        y + size,
+                        z + size,
+                        x - size,
+                        y + size,
+                        z - size,
+                        # Right face
+                        x + size,
+                        y - size,
+                        z + size,
+                        x + size,
+                        y - size,
+                        z - size,
+                        x + size,
+                        y + size,
+                        z - size,
+                        x + size,
+                        y + size,
+                        z + size,
+                        # Bottom face
+                        x - size,
+                        y - size,
+                        z - size,
+                        x + size,
+                        y - size,
+                        z - size,
+                        x + size,
+                        y - size,
+                        z + size,
+                        x - size,
+                        y - size,
+                        z + size,
+                        # Top face
+                        x - size,
+                        y + size,
+                        z + size,
+                        x + size,
+                        y + size,
+                        z + size,
+                        x + size,
+                        y + size,
+                        z - size,
+                        x - size,
+                        y + size,
+                        z - size,
+                    ]
+                    vertices.extend(cube_vertices)
+
+        vertices = np.array(vertices, dtype=np.float32)
+
+        # Create and bind vertex VBO
+        self.vbo_vertices = glGenBuffers(1)
+        glBindBuffer(GL_ARRAY_BUFFER, self.vbo_vertices)
+        glBufferData(GL_ARRAY_BUFFER, vertices.nbytes, vertices,
+                     GL_STATIC_DRAW)
+
+        # Create and bind color VBO
+        self.vbo_colors = glGenBuffers(1)
+        glBindBuffer(GL_ARRAY_BUFFER, self.vbo_colors)
+        glBufferData(GL_ARRAY_BUFFER, self.color_data.nbytes, self.color_data,
+                     GL_DYNAMIC_DRAW)
+
+        self.vertex_count = len(vertices) // 3
+
+    def update_colors(self):
+        """Update the color VBO based on current pixel values"""
+        color_index = 0
         for x in range(self.width):
             for y in range(self.height):
                 for z in range(self.length):
                     color = self.pixels[x, y, z]
-                    if any(color):  # Only draw if the color isn't black
-                        self.draw_cube(x, y, z, color)
+                    # Each cube has 24 vertices (6 faces * 4 vertices)
+                    for _ in range(24):
+                        self.color_data[color_index] = color / 255.0
+                        color_index += 1
 
-        pygame.display.flip()
-
-    def draw_cube(self, x, y, z, color):
-        """Helper method to draw a colored cube at given coordinates"""
-        # Set emission to make colors more vibrant
-        glMaterialfv(GL_FRONT_AND_BACK, GL_EMISSION,
-                     (color[0] / 255.0 * 1.0, color[1] / 255.0 * 1.0,
-                      color[2] / 255.0 * 1.0, 1.0))
-        #glColor3ub(color[0], color[1], color[2])
-        glColor3ub(255, 255, 255)
-
-        size = 0.2
-        vertices = [
-            # Front face
-            [x - size, y - size, z + size],
-            [x + size, y - size, z + size],
-            [x + size, y + size, z + size],
-            [x - size, y + size, z + size],
-            # Back face
-            [x - size, y - size, z - size],
-            [x + size, y - size, z - size],
-            [x + size, y + size, z - size],
-            [x - size, y + size, z - size],
-        ]
-
-        faces = [
-            [0, 1, 2, 3],  # Front
-            [5, 4, 7, 6],  # Back
-            [4, 0, 3, 7],  # Left
-            [1, 5, 6, 2],  # Right
-            [4, 5, 1, 0],  # Bottom
-            [3, 2, 6, 7],  # Top
-        ]
-
-        glBegin(GL_QUADS)
-        for face in faces:
-            for vertex in face:
-                glVertex3fv(vertices[vertex])
-        glEnd()
+        glBindBuffer(GL_ARRAY_BUFFER, self.vbo_colors)
+        glBufferSubData(GL_ARRAY_BUFFER, 0, self.color_data.nbytes,
+                        self.color_data)
 
     def rotate(self, angle, x, y, z):
         """Apply a rotation to our stored rotation matrix"""
@@ -232,13 +339,13 @@ class VolumetricDisplay:
 
             # Handle continuous rotation
             if self.rotation_keys[pygame.K_LEFT]:
-                self.rotate(5, 0, 1, 0)
+                self.rotate(1, 0, 1, 0)
             if self.rotation_keys[pygame.K_RIGHT]:
-                self.rotate(-5, 0, 1, 0)
+                self.rotate(-1, 0, 1, 0)
             if self.rotation_keys[pygame.K_UP]:
-                self.rotate(5, 1, 0, 0)
+                self.rotate(1, 1, 0, 0)
             if self.rotation_keys[pygame.K_DOWN]:
-                self.rotate(-5, 1, 0, 0)
+                self.rotate(-1, 1, 0, 0)
 
             # Always render every frame
             self.render()
