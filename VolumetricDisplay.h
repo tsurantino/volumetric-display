@@ -37,6 +37,8 @@ private:
   void cursorPositionCallback(GLFWwindow *window, double xpos, double ypos);
   void scrollCallback(GLFWwindow *window, double xoffset, double yoffset);
   void rotate(float angle, float x, float y, float z);
+  void keyCallback(GLFWwindow *window, int key, int scancode, int action,
+                   int mods);
   void updateCamera();
 
   glm::vec3 camera_position;
@@ -55,6 +57,7 @@ private:
   std::vector<std::array<unsigned char, 3>> pixels; // RGB for each voxel
   float alpha;
   std::atomic<bool> running;
+  bool show_axis;
   std::atomic<bool> needs_update;
   std::thread artnet_thread;
 

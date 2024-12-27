@@ -19,6 +19,8 @@ VolumetricDisplay::VolumetricDisplay(int width, int height, int length,
                                      int universes_per_layer, float alpha)
     : width(width), height(height), length(length), ip(ip), port(port),
       universes_per_layer(universes_per_layer), alpha(alpha),
+      left_mouse_button_pressed(false), right_mouse_button_pressed(false),
+      show_axis(false), needs_update(false),
       socket(io_service, boost::asio::ip::udp::endpoint(
                              boost::asio::ip::address::from_string(ip), port)) {
 
@@ -83,6 +85,12 @@ void VolumetricDisplay::setupOpenGL() {
         static_cast<VolumetricDisplay *>(glfwGetWindowUserPointer(window))
             ->scrollCallback(window, xoffset, yoffset);
       });
+
+  glfwSetKeyCallback(window, [](GLFWwindow *window, int key, int scancode,
+                                int action, int mods) {
+    static_cast<VolumetricDisplay *>(glfwGetWindowUserPointer(window))
+        ->keyCallback(window, key, scancode, action, mods);
+  });
 
   glEnable(GL_DEPTH_TEST);
   glEnable(GL_LIGHTING);
@@ -277,10 +285,39 @@ void VolumetricDisplay::render() {
   glDrawElements(GL_TRIANGLES, vertex_count, GL_UNSIGNED_INT, nullptr);
   glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
 
+  if (show_axis) {
+    // Push the transform
+    glPushMatrix();
+    glTranslatef(-1, -1, -1);
+    glBegin(GL_LINES);
+    // X axis (red)
+    glColor3f(10.0f, 0.0f, 0.0f);
+    glVertex3f(0.0f, 0.0f, 0.0f);
+    glVertex3f(5.0f, 0.0f, 0.0f);
+    // Y axis (green)
+    glColor3f(0.0f, 1.0f, 0.0f);
+    glVertex3f(0.0f, 0.0f, 0.0f);
+    glVertex3f(0.0f, 5.0f, 0.0f);
+    // Z axis (blue)
+    glColor3f(0.0f, 0.0f, 1.0f);
+    glVertex3f(0.0f, 0.0f, 0.0f);
+    glVertex3f(0.0f, 0.0f, 5.0f);
+    glEnd();
+    // Pop the transform
+    glPopMatrix();
+  }
+
   glDisableClientState(GL_VERTEX_ARRAY);
   glDisableClientState(GL_COLOR_ARRAY);
 
   glfwSwapBuffers(glfwGetCurrentContext());
+}
+
+void VolumetricDisplay::keyCallback(GLFWwindow *window, int key, int scancode,
+                                    int action, int mods) {
+  if (key == GLFW_KEY_A && action == GLFW_PRESS) {
+    show_axis = !show_axis;
+  }
 }
 
 void VolumetricDisplay::rotate(float angle, float x, float y, float z) {
