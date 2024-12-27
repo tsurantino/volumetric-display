@@ -57,6 +57,7 @@ private:
     GLuint vbo_vertices;
     GLuint vbo_colors;
     size_t vertex_count;
+    GLuint vbo_indices;
 
     glm::mat4 rotation_matrix;
     glm::mat4 temp_matrix;

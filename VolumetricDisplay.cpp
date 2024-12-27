@@ -90,53 +90,71 @@ void VolumetricDisplay::setupOpenGL() {
 void VolumetricDisplay::setupVBO() {
   std::vector<GLfloat> vertices;
   std::vector<GLfloat> colors;
+std::vector<GLuint> indices;
 
-  vertex_count = width * height * length *
-                 24; // 24 vertices per voxel (6 faces * 4 vertices)
+vertex_count = width * height * length * 36; // 36 indices per voxel (6 faces * 2 triangles * 3 vertices)
 
-  for (int x = 0; x < width; ++x) {
-    for (int y = 0; y < height; ++y) {
-      for (int z = 0; z < length; ++z) {
-        GLfloat size = 0.1f;
+for (int x = 0; x < width; ++x) {
+  for (int y = 0; y < height; ++y) {
+    for (int z = 0; z < length; ++z) {
+      GLfloat size = 0.1f;
 
-        vertices.insert(vertices.end(), {
-                                            x - size,
-                                            y - size,
-                                            z + size,
-                                            x + size,
-                                            y - size,
-                                            z + size,
-                                            x + size,
-                                            y + size,
-                                            z + size,
-                                            x - size,
-                                            y + size,
-                                            z + size,
-                                        });
+      // Define the 8 corners of the cube
+      std::array<GLfloat, 24> cube_vertices = {
+          x - size, y - size, z - size,
+          x + size, y - size, z - size,
+          x + size, y + size, z - size,
+          x - size, y + size, z - size,
+          x - size, y - size, z + size,
+          x + size, y - size, z + size,
+          x + size, y + size, z + size,
+          x - size, y + size, z + size,
+      };
 
-        // Initialize colors (e.g., white for now)
-        for (int i = 0; i < 4; ++i) {
-          colors.push_back(1.0f); // R
-          colors.push_back(1.0f); // G
-          colors.push_back(1.0f); // B
-        }
+      vertices.insert(vertices.end(), cube_vertices.begin(), cube_vertices.end());
+
+      // Initialize colors (e.g., white for now)
+      for (int i = 0; i < 8; ++i) {
+        colors.push_back(1.0f); // R
+        colors.push_back(1.0f); // G
+        colors.push_back(1.0f); // B
+      }
+
+      // Define the 12 triangles (36 indices) for the 6 faces of the cube
+      std::array<GLuint, 36> cube_indices = {
+          0, 1, 2, 2, 3, 0, // Front face
+          4, 5, 6, 6, 7, 4, // Back face
+          0, 1, 5, 5, 4, 0, // Bottom face
+          2, 3, 7, 7, 6, 2, // Top face
+          0, 3, 7, 7, 4, 0, // Left face
+          1, 2, 6, 6, 5, 1  // Right face
+      };
+
+      GLuint base_index = static_cast<GLuint>(vertices.size() / 3 - 8);
+      for (auto index : cube_indices) {
+        indices.push_back(base_index + index);
       }
     }
   }
+}
 
-  // Generate and bind Vertex Buffer Object
-  glGenBuffers(1, &vbo_vertices);
-  glBindBuffer(GL_ARRAY_BUFFER, vbo_vertices);
-  glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(GLfloat),
-               vertices.data(), GL_STATIC_DRAW);
-  glBindBuffer(GL_ARRAY_BUFFER, 0); // Unbind the VBO
+// Generate and bind Vertex Buffer Object
+glGenBuffers(1, &vbo_vertices);
+glBindBuffer(GL_ARRAY_BUFFER, vbo_vertices);
+glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(GLfloat), vertices.data(), GL_STATIC_DRAW);
+glBindBuffer(GL_ARRAY_BUFFER, 0); // Unbind the VBO
 
-  // Generate and bind Color Buffer Object
-  glGenBuffers(1, &vbo_colors);
-  glBindBuffer(GL_ARRAY_BUFFER, vbo_colors);
-  glBufferData(GL_ARRAY_BUFFER, colors.size() * sizeof(GLfloat), colors.data(),
-               GL_DYNAMIC_DRAW);
-  glBindBuffer(GL_ARRAY_BUFFER, 0); // Unbind the CBO
+// Generate and bind Color Buffer Object
+glGenBuffers(1, &vbo_colors);
+glBindBuffer(GL_ARRAY_BUFFER, vbo_colors);
+glBufferData(GL_ARRAY_BUFFER, colors.size() * sizeof(GLfloat), colors.data(), GL_DYNAMIC_DRAW);
+glBindBuffer(GL_ARRAY_BUFFER, 0); // Unbind the CBO
+
+// Generate and bind Index Buffer Object
+glGenBuffers(1, &vbo_indices);
+glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, vbo_indices);
+glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(GLuint), indices.data(), GL_STATIC_DRAW);
+glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0); // Unbind the IBO
 }
 
 void VolumetricDisplay::listenArtNet() {
@@ -190,7 +208,7 @@ void VolumetricDisplay::updateColors() {
     GLfloat r = pixel[0] / 255.0f;
     GLfloat g = pixel[1] / 255.0f;
     GLfloat b = pixel[2] / 255.0f;
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < 8; ++i) {
       colors.push_back(r);
       colors.push_back(g);
       colors.push_back(b);
@@ -243,7 +261,9 @@ void VolumetricDisplay::render() {
   glEnableClientState(GL_COLOR_ARRAY);
   glColorPointer(3, GL_FLOAT, 0, nullptr);
 
-  glDrawArrays(GL_QUADS, 0, vertex_count);
+  glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, vbo_indices);
+  glDrawElements(GL_TRIANGLES, vertex_count, GL_UNSIGNED_INT, nullptr);
+  glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
 
   glDisableClientState(GL_VERTEX_ARRAY);
   glDisableClientState(GL_COLOR_ARRAY);
