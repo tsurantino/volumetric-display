@@ -31,6 +31,11 @@ class VolumetricDisplay:
             pygame.K_DOWN: False
         }
 
+        self.rotation_x = np.identity(4, dtype=np.float32)
+        self.rotation_y = np.identity(4, dtype=np.float32)
+        self.rotation_z = np.identity(4, dtype=np.float32)
+        self.temp_matrix = np.identity(4, dtype=np.float32)
+
         # Initialize 3D array to store RGB values
         self.pixels = np.zeros((width, height, length, 3), dtype=np.uint8)
 
@@ -43,10 +48,6 @@ class VolumetricDisplay:
         # ArtNet setup
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind((ip_address, port))
-
-        # Visualization setup
-        pygame.init()
-        pygame.display.set_mode((800, 600), DOUBLEBUF | OPENGL)
 
         # Initialize VBOs
         self._setup_vbo()
@@ -120,8 +121,10 @@ class VolumetricDisplay:
         glMultMatrixf(self.rotation_matrix)
         glTranslatef(-self.width / 2, -self.height / 2, -self.length / 2)
 
-        # Update and render all cubes using VBO
-        self.update_colors()
+        # Only update colors when new data arrives
+        if self.needs_update:
+            self.update_colors()
+            self.needs_update = False
 
         # Enable vertex and color arrays
         glEnableClientState(GL_VERTEX_ARRAY)
@@ -289,27 +292,28 @@ class VolumetricDisplay:
         """Apply a rotation to our stored rotation matrix"""
         # Convert angle to radians
         angle = np.radians(angle)
-
-        # Create rotation matrix
         c = np.cos(angle)
         s = np.sin(angle)
-        rotation = np.identity(4, dtype=np.float32)
 
+        # Reuse pre-allocated matrices
         if x:  # Rotate around X axis
-            rotation = np.array(
-                [[1, 0, 0, 0], [0, c, -s, 0], [0, s, c, 0], [0, 0, 0, 1]],
-                dtype=np.float32)
+            self.rotation_x.flat[[5, 6, 9, 10]] = [c, -s, s, c]
+            np.matmul(self.rotation_matrix,
+                      self.rotation_x,
+                      out=self.temp_matrix)
         elif y:  # Rotate around Y axis
-            rotation = np.array(
-                [[c, 0, s, 0], [0, 1, 0, 0], [-s, 0, c, 0], [0, 0, 0, 1]],
-                dtype=np.float32)
+            self.rotation_y.flat[[0, 2, 8, 10]] = [c, s, -s, c]
+            np.matmul(self.rotation_matrix,
+                      self.rotation_y,
+                      out=self.temp_matrix)
         elif z:  # Rotate around Z axis
-            rotation = np.array(
-                [[c, -s, 0, 0], [s, c, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]],
-                dtype=np.float32)
+            self.rotation_z.flat[[0, 1, 4, 5]] = [c, -s, s, c]
+            np.matmul(self.rotation_matrix,
+                      self.rotation_z,
+                      out=self.temp_matrix)
 
-        # Apply rotation to stored matrix
-        self.rotation_matrix = np.matmul(self.rotation_matrix, rotation)
+        # Swap matrices instead of copying
+        self.rotation_matrix, self.temp_matrix = self.temp_matrix, self.rotation_matrix
 
         # Renormalize the rotation matrix to prevent accumulation of numerical errors
         # Extract 3x3 rotation part
@@ -380,6 +384,10 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     width, height, length = map(int, args.geometry.split('x'))
+
+    # Visualization setup
+    pygame.init()
+    pygame.display.set_mode((800, 600), DOUBLEBUF | OPENGL)
 
     # Example usage
     display = VolumetricDisplay(width, height, length, args.ip, args.port,
