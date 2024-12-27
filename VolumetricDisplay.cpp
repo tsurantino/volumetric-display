@@ -35,6 +35,13 @@ VolumetricDisplay::VolumetricDisplay(int width, int height, int length,
   temp_matrix = glm::mat4(1.0f);
 
   setupOpenGL();
+  camera_position = glm::vec3(0.0f, 0.0f, 0.0f);
+  camera_orientation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+  camera_distance = std::max(width, std::max(height, length)) * 2.5f;
+  left_mouse_button_pressed = false;
+  right_mouse_button_pressed = false;
+  last_mouse_x = 0.0;
+  last_mouse_y = 0.0;
   setupVBO();
 
   artnet_thread = std::thread(&VolumetricDisplay::listenArtNet, this);
@@ -55,6 +62,23 @@ void VolumetricDisplay::setupOpenGL() {
   }
   glfwMakeContextCurrent(window);
   glewInit();
+
+  glfwSetWindowUserPointer(window, this);
+  glfwSetMouseButtonCallback(
+      window, [](GLFWwindow *window, int button, int action, int mods) {
+        static_cast<VolumetricDisplay *>(glfwGetWindowUserPointer(window))
+            ->mouseButtonCallback(window, button, action, mods);
+      });
+  glfwSetCursorPosCallback(
+      window, [](GLFWwindow *window, double xpos, double ypos) {
+        static_cast<VolumetricDisplay *>(glfwGetWindowUserPointer(window))
+            ->cursorPositionCallback(window, xpos, ypos);
+      });
+  glfwSetScrollCallback(
+      window, [](GLFWwindow *window, double xoffset, double yoffset) {
+        static_cast<VolumetricDisplay *>(glfwGetWindowUserPointer(window))
+            ->scrollCallback(window, xoffset, yoffset);
+      });
 
   glEnable(GL_DEPTH_TEST);
   glEnable(GL_LIGHTING);
@@ -190,6 +214,16 @@ void VolumetricDisplay::cleanup() {
   glfwTerminate();
 }
 
+void VolumetricDisplay::updateCamera() {
+  glMatrixMode(GL_MODELVIEW);
+  glLoadIdentity();
+  gluPerspective(45.0f, 800.0f / 600.0f, 0.1f, 100.0f);
+  glTranslatef(0, 0, -camera_distance);
+  glm::mat4 rotation_matrix = glm::toMat4(camera_orientation);
+  glMultMatrixf(glm::value_ptr(rotation_matrix));
+  glTranslatef(-width / 2.0f, -height / 2.0f, -length / 2.0f);
+}
+
 void VolumetricDisplay::render() {
   updateColors();
 
@@ -198,9 +232,7 @@ void VolumetricDisplay::render() {
   glMatrixMode(GL_MODELVIEW);
   glLoadIdentity();
   gluPerspective(45.0f, 800.0f / 600.0f, 0.1f, 100.0f);
-  glTranslatef(0, 0, -std::max(width, std::max(height, length)) * 2.5f);
-  glMultMatrixf(glm::value_ptr(rotation_matrix));
-  glTranslatef(-width / 2.0f, -height / 2.0f, -length / 2.0f);
+  updateCamera();
 
   glBindBuffer(GL_ARRAY_BUFFER, vbo_vertices);
   glVertexPointer(3, GL_FLOAT, 0, nullptr);
@@ -216,4 +248,43 @@ void VolumetricDisplay::render() {
   glDisableClientState(GL_COLOR_ARRAY);
 
   glfwSwapBuffers(glfwGetCurrentContext());
+}
+
+void VolumetricDisplay::rotate(float angle, float x, float y, float z) {
+  glm::vec3 axis(x, y, z);
+  glm::quat rotation = glm::angleAxis(glm::radians(angle), axis);
+  camera_orientation = rotation * camera_orientation;
+}
+
+void VolumetricDisplay::mouseButtonCallback(GLFWwindow *window, int button,
+                                            int action, int mods) {
+  if (button == GLFW_MOUSE_BUTTON_LEFT) {
+    left_mouse_button_pressed = (action == GLFW_PRESS);
+  } else if (button == GLFW_MOUSE_BUTTON_RIGHT) {
+    right_mouse_button_pressed = (action == GLFW_PRESS);
+  }
+}
+
+void VolumetricDisplay::cursorPositionCallback(GLFWwindow *window, double xpos,
+                                               double ypos) {
+  if (left_mouse_button_pressed) {
+    float dx = static_cast<float>(xpos - last_mouse_x);
+    float dy = static_cast<float>(ypos - last_mouse_y);
+    rotate(dx * 0.1f, 0.0f, 1.0f, 0.0f);
+    rotate(dy * 0.1f, 1.0f, 0.0f, 0.0f);
+  } else if (right_mouse_button_pressed) {
+    float dx = static_cast<float>(xpos - last_mouse_x);
+    float dy = static_cast<float>(ypos - last_mouse_y);
+    camera_position += glm::vec3(-dx * 0.01f, dy * 0.01f, 0.0f);
+  }
+  last_mouse_x = xpos;
+  last_mouse_y = ypos;
+}
+
+void VolumetricDisplay::scrollCallback(GLFWwindow *window, double xoffset,
+                                       double yoffset) {
+  camera_distance -= static_cast<float>(yoffset);
+  if (camera_distance < 1.0f) {
+    camera_distance = 1.0f;
+  }
 }

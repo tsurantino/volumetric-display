@@ -10,6 +10,7 @@
 #include <boost/asio.hpp>
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
+#include <glm/gtx/quaternion.hpp>
 
 // Define the maximum universes per layer
 constexpr int MAX_UNIVERSES_PER_LAYER = 10;
@@ -29,7 +30,19 @@ private:
     void updateColors();
     void render();
     void processInput(GLFWwindow* window);
+    void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods);
+    void cursorPositionCallback(GLFWwindow* window, double xpos, double ypos);
+    void scrollCallback(GLFWwindow* window, double xoffset, double yoffset);
     void rotate(float angle, float x, float y, float z);
+    void updateCamera();
+
+    glm::vec3 camera_position;
+    glm::quat camera_orientation;
+    float camera_distance;
+    bool left_mouse_button_pressed;
+    bool right_mouse_button_pressed;
+    double last_mouse_x;
+    double last_mouse_y;
 
     int width, height, length;
     std::string ip;
