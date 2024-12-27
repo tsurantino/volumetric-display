@@ -1,3 +1,4 @@
+import argparse
 import socket
 import struct
 import time
@@ -13,44 +14,77 @@ UNIVERSE = 0  # Universe ID
 CHANNELS = 512  # Max DMX channels
 
 
-def create_artnet_dmx_packet(universe, data):
-    """
-    Manually construct an ArtNet DMX packet.
-    """
-    packet = bytearray()
+class ArtNetController:
+    def __init__(self, ip, port):
+        self.ip = ip
+        self.port = port
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 
-    # ArtNet Header
-    packet.extend(b'Art-Net\x00')  # Protocol header
-    packet.extend(struct.pack('<H', 0x5000))  # OpCode for DMX (0x5000)
-    packet.extend(struct.pack('!H',
-                              14))  # Protocol version (0x000E, big-endian)
-    packet.extend(struct.pack('B', 0))  # Sequence (0 = disabled)
-    packet.extend(struct.pack('B', 0))  # Physical port (0 = ignored)
-    packet.extend(struct.pack('<H', universe))  # Universe (little endian)
-    packet.extend(struct.pack('!H',
-                              len(data)))  # Length of DMX data (big endian)
+    def __del__(self):
+        self.sock.close()
 
-    # DMX Data
-    packet.extend(data)  # Append DMX data
+    def create_dmx_packet(self, universe, data):
+        """
+        Manually construct an ArtNet DMX packet.
+        """
+        packet = bytearray()
 
-    return packet
+        # ArtNet Header
+        packet.extend(b'Art-Net\x00')  # Protocol header
+        packet.extend(struct.pack('<H', 0x5000))  # OpCode for DMX (0x5000)
+        packet.extend(struct.pack('!H', 14))  # Protocol version (0x000E, big-endian)
+        packet.extend(struct.pack('B', 0))  # Sequence (0 = disabled)
+        packet.extend(struct.pack('B', 0))  # Physical port (0 = ignored)
+        packet.extend(struct.pack('<H', universe))  # Universe (little endian)
+        packet.extend(struct.pack('!H', len(data)))  # Length of DMX data (big endian)
 
+        # DMX Data
+        packet.extend(data)  # Append DMX data
 
-def create_artnet_sync_packet():
-    """
-    Manually construct an ArtNet Sync packet.
-    """
-    packet = bytearray()
+        return packet
 
-    # ArtNet Header
-    packet.extend(b'Art-Net\x00')  # Protocol header
-    packet.extend(struct.pack('<H', 0x5200))  # OpCode for Sync (0x5200)
-    packet.extend(struct.pack('!H',
-                              14))  # Protocol version (0x000E, big-endian)
-    packet.extend(struct.pack('B', 0))  # Sequence (ignored)
-    packet.extend(struct.pack('B', 0))  # Physical port (ignored)
+    def create_sync_packet(self):
+        """
+        Manually construct an ArtNet Sync packet.
+        """
+        packet = bytearray()
 
-    return packet
+        # ArtNet Header
+        packet.extend(b'Art-Net\x00')  # Protocol header
+        packet.extend(struct.pack('<H', 0x5200))  # OpCode for Sync (0x5200)
+        packet.extend(struct.pack('!H', 14))  # Protocol version (0x000E, big-endian)
+        packet.extend(struct.pack('B', 0))  # Sequence (ignored)
+        packet.extend(struct.pack('B', 0))  # Physical port (ignored)
+
+        return packet
+
+    def send_dmx(self, base_universe, raster, channels_per_universe=510, universes_per_layer=6):
+        """
+        Send the ArtNet DMX packet via UDP.
+        """
+        # Send DMX Data Packet
+        data = bytearray()
+        for z in range(raster.length):
+            universe = z * universes_per_layer + base_universe
+            layer = raster.data[z * raster.width * raster.height:(z + 1) * raster.width * raster.height]
+
+            for rgb in layer:
+                data.extend(struct.pack('B', saturate_u8(rgb.red * raster.brightness)))
+                data.extend(struct.pack('B', saturate_u8(rgb.green * raster.brightness)))
+                data.extend(struct.pack('B', saturate_u8(rgb.blue * raster.brightness)))
+
+            while len(data) > 0:
+                print(f"Sending DMX data for Universe {universe}...")
+                dmx_packet = self.create_dmx_packet(
+                    universe, data[:channels_per_universe])
+                self.sock.sendto(dmx_packet, (self.ip, self.port))
+                data = data[channels_per_universe:]
+                universe += 1
+
+        # Send Sync Packet
+        sync_packet = self.create_sync_packet()
+        self.sock.sendto(sync_packet, (self.ip, self.port))
 
 
 @dataclasses.dataclass
@@ -70,14 +104,17 @@ class Raster:
     """
     width: int
     height: int
+    length: int
     brightness: float
     data: list[RGB]
 
-    def __init__(self, width, height):
+    def __init__(self, width, height, length):
         self.width = width
         self.height = height
+        self.length = length
         self.brightness = 1.0
-        self.data = [RGB(0, 0, 0) for _ in range((width * height))]
+        self.data = [RGB(0, 0, 0) for _ in range((width * height * length))]
+
 
 def saturate_u8(value):
     """
@@ -85,63 +122,44 @@ def saturate_u8(value):
     """
     return int(max(0, min(value, 255)))
 
-def send_artnet_packet(ip,
-                       port,
-                       base_universe,
-                       raster,
-                       channels_per_universe=510):
-    """
-    Send the ArtNet DMX packet via UDP.
-    """
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-
-        # Send DMX Data Packet
-        universe_offset = 0
-        data = bytearray()
-        for rgb in raster.data:
-            data.extend(struct.pack('B', saturate_u8(rgb.red * raster.brightness)))
-            data.extend(struct.pack('B', saturate_u8(rgb.green * raster.brightness)))
-            data.extend(struct.pack('B', saturate_u8(rgb.blue * raster.brightness)))
-
-        while len(data) > 0:
-            dmx_packet = create_artnet_dmx_packet(
-                base_universe + universe_offset, data[:channels_per_universe])
-            sock.sendto(dmx_packet, (ip, port))
-            data = data[channels_per_universe:]
-            universe_offset += 1
-
-        # Send Sync Packet
-        sync_packet = create_artnet_sync_packet()
-        sock.sendto(sync_packet, (ip, port))
-
 
 def main():
-    raster = Raster(width=20, height=20)
-    raster.brightness = 0.05
+    parser = argparse.ArgumentParser(description="ArtNet DMX Transmission with Sync")
+    parser.add_argument("--ip", type=str, default=ARTNET_IP, help="ArtNet controller IP address")
+    parser.add_argument("--port", type=int, default=ARTNET_PORT, help="ArtNet controller port")
+    parser.add_argument("--geometry", type=str, default="20x20x20", help="Raster geometry (e.g., 20x20x20)")
+    parser.add_argument("--brightness", type=float, default=0.05, help="Brightness factor (0.0 to 1.0)")
+    args = parser.parse_args()
+
+    width, height, length = map(int, args.geometry.split("x"))
+
+    raster = Raster(width=width, height=height, length=length)
+    raster.brightness = args.brightness
+    controller = ArtNetController(args.ip, args.port)
 
     t = 0
 
     print("🚀 Starting ArtNet DMX Transmission with Sync...")
     try:
         while True:
-            send_artnet_packet(ARTNET_IP, ARTNET_PORT, UNIVERSE, raster)
+            controller.send_dmx(UNIVERSE, raster)
             time.sleep(0.01)  # Send updates at 100Hz
 
             # Draw a plane wave pattern
             t += 0.01 * 0.2
             for y in range(raster.height):
                 for x in range(raster.width):
-                    # Calculate pixel index
-                    idx = y * raster.width + x
+                    for z in range(raster.length):
+                        # Calculate pixel index
+                        idx = y * raster.width + x + z * raster.width * raster.height
 
-                    # Calculate color
-                    red = int(127 * math.sin(0.5 * math.sin(t * 5) * x + t * 10) + 128)
-                    green = int(127 * math.sin(0.5 * math.cos(t * 4) * y + t * 10) + 128)
-                    blue = int(127 * math.sin(0.5 * math.sin(t * 3) * (x + y) + t * 10) + 128)
+                        # Calculate color
+                        red = int(127 * math.sin(0.5 * math.sin(t * 5) * x + z * 0.2 + t * 10) + 128)
+                        green = int(127 * math.sin(0.5 * math.cos(t * 4) * y + z * 0.2 + t * 10) + 128)
+                        blue = int(127 * math.sin(0.5 * math.sin(t * 3) * (x + y + z) + t * 10) + 128)
 
-                    # Set pixel color
-                    raster.data[idx] = RGB(red, green, blue)
+                        # Set pixel color
+                        raster.data[idx] = RGB(red, green, blue)
 
     except KeyboardInterrupt:
         print("\n🛑 Transmission stopped by user.")
@@ -149,3 +167,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
