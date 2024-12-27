@@ -31,6 +31,7 @@ private:
   void updateColors();
   void render();
   void processInput(GLFWwindow *window);
+  void windowCloseCallback(GLFWwindow *window);
   void mouseButtonCallback(GLFWwindow *window, int button, int action,
                            int mods);
   void cursorPositionCallback(GLFWwindow *window, double xpos, double ypos);

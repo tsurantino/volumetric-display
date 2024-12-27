@@ -64,6 +64,10 @@ void VolumetricDisplay::setupOpenGL() {
   glewInit();
 
   glfwSetWindowUserPointer(window, this);
+  glfwSetWindowCloseCallback(window, [](GLFWwindow *window) {
+    static_cast<VolumetricDisplay *>(glfwGetWindowUserPointer(window))
+        ->windowCloseCallback(window);
+  });
   glfwSetMouseButtonCallback(
       window, [](GLFWwindow *window, int button, int action, int mods) {
         static_cast<VolumetricDisplay *>(glfwGetWindowUserPointer(window))
@@ -245,6 +249,7 @@ void VolumetricDisplay::updateCamera() {
   glLoadIdentity();
   gluPerspective(45.0f, 800.0f / 600.0f, 0.1f, 100.0f);
   glTranslatef(0, 0, -camera_distance);
+  glTranslatef(camera_position.x, camera_position.y, camera_position.z);
   glm::mat4 rotation_matrix = glm::toMat4(camera_orientation);
   glMultMatrixf(glm::value_ptr(rotation_matrix));
   glTranslatef(-width / 2.0f, -height / 2.0f, -length / 2.0f);
@@ -284,12 +289,25 @@ void VolumetricDisplay::rotate(float angle, float x, float y, float z) {
   camera_orientation = rotation * camera_orientation;
 }
 
+void VolumetricDisplay::windowCloseCallback(GLFWwindow *window) {
+  running = false;
+}
+
 void VolumetricDisplay::mouseButtonCallback(GLFWwindow *window, int button,
                                             int action, int mods) {
-  if (button == GLFW_MOUSE_BUTTON_LEFT) {
-    left_mouse_button_pressed = (action == GLFW_PRESS);
-  } else if (button == GLFW_MOUSE_BUTTON_RIGHT) {
-    right_mouse_button_pressed = (action == GLFW_PRESS);
+  if (action == GLFW_PRESS) {
+    if (button == GLFW_MOUSE_BUTTON_LEFT) {
+      if (mods & GLFW_MOD_SHIFT) {
+        right_mouse_button_pressed = true;
+      } else {
+        left_mouse_button_pressed = true;
+      }
+    }
+  } else if (action == GLFW_RELEASE) {
+    if (button == GLFW_MOUSE_BUTTON_LEFT) {
+      right_mouse_button_pressed = false;
+      left_mouse_button_pressed = false;
+    }
   }
 }
 
@@ -298,12 +316,12 @@ void VolumetricDisplay::cursorPositionCallback(GLFWwindow *window, double xpos,
   if (left_mouse_button_pressed) {
     float dx = static_cast<float>(xpos - last_mouse_x);
     float dy = static_cast<float>(ypos - last_mouse_y);
-    rotate(dx * 0.1f, 0.0f, 1.0f, 0.0f);
-    rotate(dy * 0.1f, 1.0f, 0.0f, 0.0f);
+    rotate(dx * 0.2f, 0.0f, 1.0f, 0.0f);
+    rotate(dy * 0.2f, 1.0f, 0.0f, 0.0f);
   } else if (right_mouse_button_pressed) {
     float dx = static_cast<float>(xpos - last_mouse_x);
     float dy = static_cast<float>(ypos - last_mouse_y);
-    camera_position += glm::vec3(-dx * 0.01f, dy * 0.01f, 0.0f);
+    camera_position -= glm::vec3(-dx * 0.05f, dy * 0.05f, 0.0f);
   }
   last_mouse_x = xpos;
   last_mouse_y = ypos;
