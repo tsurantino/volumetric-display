@@ -117,13 +117,10 @@ void VolumetricDisplay::setupVBO() {
 void VolumetricDisplay::listenArtNet() {
   std::cout << "Listening for Art-Net on " << ip << ":" << port << std::endl;
   while (running) {
-    std::cout << "Receive?" << std::endl;
     std::array<char, 1024> buffer;
     boost::asio::ip::udp::endpoint sender_endpoint;
     size_t length =
         socket.receive_from(boost::asio::buffer(buffer), sender_endpoint);
-
-    std::cout << "Received " << length << " bytes" << std::endl;
 
     if (strncmp(buffer.data(), "Art-Net\0", 8) != 0) {
       std::cout << "Received non-Art-Net packet" << std::endl;
@@ -139,13 +136,6 @@ void VolumetricDisplay::listenArtNet() {
       int universe_in_layer = universe % universes_per_layer;
       int start_pixel = universe_in_layer * 170;
 
-      std::cout << "Received DMX data for universe " << universe << " (layer "
-                << layer << ", universe in layer " << universe_in_layer << ")"
-                << ", start pixel " << start_pixel << ", length " << length
-                << std::endl;
-
-      int updated_pixels = 0;
-
       for (int i = 0; i < length && (start_pixel + i / 3) < width * height;
            i += 3) {
         int idx = start_pixel + i / 3;
@@ -158,11 +148,8 @@ void VolumetricDisplay::listenArtNet() {
         pixels[pixel_index] = {(unsigned char)buffer[18 + i],
                                (unsigned char)buffer[18 + i + 1],
                                (unsigned char)buffer[18 + i + 2]};
-        updated_pixels++;
       }
-      std::cout << "Updated " << updated_pixels << " pixels" << std::endl;
     } else if (opcode == 0x5200) {
-      std::cout << "Received ArtPoll" << std::endl;
       needs_update = true;
     } else {
       std::cout << "Received unknown opcode: " << opcode << std::endl;
@@ -204,6 +191,8 @@ void VolumetricDisplay::cleanup() {
 }
 
 void VolumetricDisplay::render() {
+  updateColors();
+
   glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
   glMatrixMode(GL_MODELVIEW);
