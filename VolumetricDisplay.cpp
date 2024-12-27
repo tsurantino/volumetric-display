@@ -99,7 +99,6 @@ void VolumetricDisplay::setupVBO() {
       for (int z = 0; z < length; ++z) {
         GLfloat size = 0.1f;
 
-        // Front face (as an example)
         vertices.insert(vertices.end(), {
                                             x - size,
                                             y - size,
@@ -116,7 +115,7 @@ void VolumetricDisplay::setupVBO() {
                                         });
 
         // Initialize colors (e.g., white for now)
-        for (int i = 0; i < 24; ++i) {
+        for (int i = 0; i < 4; ++i) {
           colors.push_back(1.0f); // R
           colors.push_back(1.0f); // G
           colors.push_back(1.0f); // B
@@ -130,12 +129,14 @@ void VolumetricDisplay::setupVBO() {
   glBindBuffer(GL_ARRAY_BUFFER, vbo_vertices);
   glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(GLfloat),
                vertices.data(), GL_STATIC_DRAW);
+  glBindBuffer(GL_ARRAY_BUFFER, 0); // Unbind the VBO
 
   // Generate and bind Color Buffer Object
   glGenBuffers(1, &vbo_colors);
   glBindBuffer(GL_ARRAY_BUFFER, vbo_colors);
   glBufferData(GL_ARRAY_BUFFER, colors.size() * sizeof(GLfloat), colors.data(),
                GL_DYNAMIC_DRAW);
+  glBindBuffer(GL_ARRAY_BUFFER, 0); // Unbind the CBO
 }
 
 void VolumetricDisplay::listenArtNet() {
@@ -189,7 +190,7 @@ void VolumetricDisplay::updateColors() {
     GLfloat r = pixel[0] / 255.0f;
     GLfloat g = pixel[1] / 255.0f;
     GLfloat b = pixel[2] / 255.0f;
-    for (int i = 0; i < 24; ++i) {
+    for (int i = 0; i < 4; ++i) {
       colors.push_back(r);
       colors.push_back(g);
       colors.push_back(b);
@@ -235,12 +236,12 @@ void VolumetricDisplay::render() {
   updateCamera();
 
   glBindBuffer(GL_ARRAY_BUFFER, vbo_vertices);
-  glVertexPointer(3, GL_FLOAT, 0, nullptr);
   glEnableClientState(GL_VERTEX_ARRAY);
+  glVertexPointer(3, GL_FLOAT, 0, nullptr);
 
   glBindBuffer(GL_ARRAY_BUFFER, vbo_colors);
-  glColorPointer(3, GL_FLOAT, 0, nullptr);
   glEnableClientState(GL_COLOR_ARRAY);
+  glColorPointer(3, GL_FLOAT, 0, nullptr);
 
   glDrawArrays(GL_QUADS, 0, vertex_count);
 
