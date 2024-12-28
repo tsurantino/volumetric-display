@@ -92,6 +92,11 @@ void VolumetricDisplay::setupOpenGL() {
         ->keyCallback(window, key, scancode, action, mods);
   });
 
+  glfwSetFramebufferSizeCallback(window, [](GLFWwindow *window, int width, int height) {
+    static_cast<VolumetricDisplay *>(glfwGetWindowUserPointer(window))
+        ->framebufferSizeCallback(window, width, height);
+  });
+
   glEnable(GL_DEPTH_TEST);
   glEnable(GL_LIGHTING);
   glEnable(GL_COLOR_MATERIAL);
@@ -252,10 +257,17 @@ void VolumetricDisplay::cleanup() {
   glfwTerminate();
 }
 
+void VolumetricDisplay::framebufferSizeCallback(GLFWwindow *window, int width, int height) {
+  glViewport(0, 0, width, height);
+  viewport_width = width;
+  viewport_height = height;
+  viewport_aspect = static_cast<float>(viewport_width) / static_cast<float>(viewport_height);
+}
+
 void VolumetricDisplay::updateCamera() {
   glMatrixMode(GL_MODELVIEW);
   glLoadIdentity();
-  gluPerspective(45.0f, 800.0f / 600.0f, 0.1f, 100.0f);
+  gluPerspective(45.0f, viewport_aspect, 0.1f, 100.0f);
   glTranslatef(0, 0, -camera_distance);
   glTranslatef(camera_position.x, camera_position.y, camera_position.z);
   glm::mat4 rotation_matrix = glm::toMat4(camera_orientation);
@@ -270,7 +282,7 @@ void VolumetricDisplay::render() {
 
   glMatrixMode(GL_MODELVIEW);
   glLoadIdentity();
-  gluPerspective(45.0f, 800.0f / 600.0f, 0.1f, 100.0f);
+  gluPerspective(45.0f, viewport_aspect, 0.1f, 100.0f);
   updateCamera();
 
   glBindBuffer(GL_ARRAY_BUFFER, vbo_vertices);

@@ -39,6 +39,7 @@ private:
   void rotate(float angle, float x, float y, float z);
   void keyCallback(GLFWwindow *window, int key, int scancode, int action,
                    int mods);
+  void framebufferSizeCallback(GLFWwindow *window, int width, int height);
   void updateCamera();
 
   glm::vec3 camera_position;
@@ -49,6 +50,8 @@ private:
   double last_mouse_x;
   double last_mouse_y;
 
+  int viewport_width, viewport_height;
+  float viewport_aspect = 1.0f;
   int width, height, length;
   std::string ip;
   int port;
