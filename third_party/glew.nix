@@ -4,7 +4,7 @@ let
     postInstall = (oldAttrs.postInstall or "") + ''
       find $out
       # Move all .dylib and .so files to .dev/lib/
-      cp lib/*.dylib "''${!outputDev}/lib/"
+      cp lib/*.dylib lib/*.so lib/*.so.* "''${!outputDev}/lib/"
     '';
   });
 in
