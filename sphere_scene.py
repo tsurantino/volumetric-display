@@ -15,15 +15,17 @@ class Sphere:
     vz: float
     radius: float
     birth_time: float
+    mass: float
     lifetime: float
     color: RGB
 
     # Physics constants
-    GRAVITY = 15.0  # Gravity acceleration
-    ELASTICITY = 0.8  # Bounce elasticity (1.0 = perfect bounce)
-    AIR_DAMPING = 0.99  # Air resistance (velocity multiplier per update)
+    GRAVITY = 20.0  # Gravity acceleration
+    ELASTICITY = 0.95  # Bounce elasticity (1.0 = perfect bounce)
+    AIR_DAMPING = 0.999  # Air resistance (velocity multiplier per update)
     GROUND_FRICTION = 0.95  # Additional friction when touching ground
     MINIMUM_SPEED = 0.01  # Speed below which we stop movement
+    FADE_IN_OUT_TIME = 0.2  # Time to fade in and out
 
     def update(self, dt: float, bounds: tuple[float, float, float]):
         # Apply gravity
@@ -100,16 +102,17 @@ class Sphere:
 
             # Only collide if spheres are moving toward each other
             if normal_vel < 0:
-                # Elastic collision impulse
-                impulse = -(1 + self.ELASTICITY) * normal_vel
+                # Calculate the impulse scalar
+                impulse = -(1 + self.ELASTICITY) * normal_vel / (
+                    1 / self.mass + 1 / other.mass)
 
-                # Update velocities
-                self.vx -= nx * impulse
-                self.vy -= ny * impulse
-                self.vz -= nz * impulse
-                other.vx += nx * impulse
-                other.vy += ny * impulse
-                other.vz += nz * impulse
+                # Update velocities using conservation of momentum
+                self.vx -= (impulse / self.mass) * nx
+                self.vy -= (impulse / self.mass) * ny
+                self.vz -= (impulse / self.mass) * nz
+                other.vx += (impulse / other.mass) * nx
+                other.vy += (impulse / other.mass) * ny
+                other.vz += (impulse / other.mass) * nz
 
                 # Separate spheres to prevent sticking
                 overlap = (self.radius + other.radius - distance) / 2
@@ -125,12 +128,18 @@ class Sphere:
 
     def get_current_radius(self, current_time: float) -> float:
         age = current_time - self.birth_time
-        if age > self.lifetime - 1.0:  # Start shrinking in the last second
-            return self.radius * (1.0 - (age - (self.lifetime - 1.0)))
+        if age < self.FADE_IN_OUT_TIME:
+            # Growing at the beginning
+            return self.radius * age / self.FADE_IN_OUT_TIME
+        elif age > self.lifetime - self.FADE_IN_OUT_TIME:
+            # Shrinking at the end
+            return self.radius * (self.lifetime - age) / self.FADE_IN_OUT_TIME
         return self.radius
 
 
 class BouncingSphereScene(Scene):
+
+    RENDER_FADE_MARGIN = 0.2  # Fade out near the edge
 
     def __init__(self):
         self.spheres: List[Sphere] = []
@@ -148,16 +157,18 @@ class BouncingSphereScene(Scene):
         z = random.uniform(radius, length - radius)
 
         # Random initial velocity
-        speed = random.uniform(2.0, 8.0)
+        speed = random.uniform(8.0, 32.0)
         angle = random.uniform(0, 2 * math.pi)
 
         vx = speed * math.cos(angle)
-        vy = random.uniform(0, 5.0)  # Initial upward velocity
+        vy = random.uniform(8, 32.0)  # Initial upward velocity
         vz = speed * math.sin(angle)
 
         # Random color
         color = RGB(random.randint(100, 255), random.randint(100, 255),
                     random.randint(100, 255))
+
+        mass = radius**3  # Mass scales by the radius cubed
 
         return Sphere(x=x,
                       y=y,
@@ -167,8 +178,9 @@ class BouncingSphereScene(Scene):
                       vz=vz,
                       radius=radius,
                       birth_time=time,
-                      lifetime=random.uniform(5.0, 10.0),
-                      color=color)
+                      lifetime=random.uniform(5.0, 30.0),
+                      color=color,
+                      mass=mass)
 
     def render(self, raster: Raster, time: float):
         # Clear the raster
@@ -197,7 +209,7 @@ class BouncingSphereScene(Scene):
                     if sphere != other and not other.is_expired(time):
                         sphere.collide_with(other)
 
-                        # Get current radius (for shrinking effect)
+                        # Get current radius (for growing and shrinking effect)
                         current_radius = sphere.get_current_radius(time)
 
                         # Render sphere
@@ -223,8 +235,16 @@ class BouncingSphereScene(Scene):
 
                                     if distance <= current_radius:
                                         # Calculate intensity based on distance from center
-                                        intensity = 1.0 - (distance /
-                                                           current_radius)
+
+                                        if distance < current_radius * (
+                                                1 - self.RENDER_FADE_MARGIN):
+                                            intensity = 1.0
+                                        else:
+                                            intensity = 1.0 - (
+                                                distance - current_radius *
+                                                (1 - self.RENDER_FADE_MARGIN)
+                                            ) / (current_radius *
+                                                 self.RENDER_FADE_MARGIN)
                                         idx = y * raster.width + x + z * raster.width * raster.height
 
                                         # Blend with existing color
