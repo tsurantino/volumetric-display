@@ -17,10 +17,16 @@ cc_library(
 cc_binary(
     name = "main",
     srcs = [":main.cpp"],
-    linkopts = [
-        "-framework",
-        "OpenGL",
-    ],
+    linkopts = select({
+        "@platforms//os:linux": [
+            "-lGL",
+            "-lGLU",
+        ],
+        "@platforms//os:osx": [
+            "-framework",
+            "OpenGL",
+        ],
+    }),
     deps = [
         ":volumetric_display",
         "@abseil-cpp//absl/flags:flag",

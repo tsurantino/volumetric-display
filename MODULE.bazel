@@ -8,3 +8,4 @@ module(name = "artnet-tester", version = "1.0")
 
 bazel_dep(name = "googletest", version = "1.15.2")
 bazel_dep(name = "abseil-cpp", version = "20240722.0.bcr.2")
+bazel_dep(name = "platforms", version = "0.0.10")
