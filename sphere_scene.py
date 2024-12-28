@@ -21,10 +21,31 @@ class Sphere:
     # Physics constants
     GRAVITY = 15.0  # Gravity acceleration
     ELASTICITY = 0.8  # Bounce elasticity (1.0 = perfect bounce)
+    AIR_DAMPING = 0.99  # Air resistance (velocity multiplier per update)
+    GROUND_FRICTION = 0.95  # Additional friction when touching ground
+    MINIMUM_SPEED = 0.01  # Speed below which we stop movement
 
     def update(self, dt: float, bounds: tuple[float, float, float]):
         # Apply gravity
         self.vy -= self.GRAVITY * dt
+
+        # Apply air resistance
+        self.vx *= self.AIR_DAMPING
+        self.vy *= self.AIR_DAMPING
+        self.vz *= self.AIR_DAMPING
+
+        # Apply additional ground friction when touching bottom
+        if self.y - self.radius <= 0:
+            self.vx *= self.GROUND_FRICTION
+            self.vz *= self.GROUND_FRICTION
+
+        # Stop very slow movement
+        speed = math.sqrt(self.vx * self.vx + self.vy * self.vy +
+                          self.vz * self.vz)
+        if speed < self.MINIMUM_SPEED:
+            self.vx = 0
+            self.vy = 0
+            self.vz = 0
 
         # Update position
         self.x += self.vx * dt
