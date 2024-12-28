@@ -2,6 +2,10 @@ cc_library(
     name = "volumetric_display",
     srcs = ["VolumetricDisplay.cpp"],
     hdrs = ["VolumetricDisplay.h"],
+    copts = [
+        # gluPerspective is deprecated in macOS 10.9
+        "-Wno-deprecated-declarations",
+    ],
     deps = [
         "@boost",
         "@glew",
@@ -14,12 +18,13 @@ cc_binary(
     name = "main",
     srcs = [":main.cpp"],
     linkopts = [
-      "-framework", "OpenGL",
+        "-framework",
+        "OpenGL",
     ],
     deps = [
         ":volumetric_display",
-        "@glm",
         "@abseil-cpp//absl/flags:flag",
         "@abseil-cpp//absl/flags:parse",
+        "@glm",
     ],
 )

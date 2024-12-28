@@ -17,10 +17,10 @@
 VolumetricDisplay::VolumetricDisplay(int width, int height, int length,
                                      const std::string &ip, int port,
                                      int universes_per_layer, float alpha)
-    : width(width), height(height), length(length), ip(ip), port(port),
-      universes_per_layer(universes_per_layer), alpha(alpha),
-      left_mouse_button_pressed(false), right_mouse_button_pressed(false),
-      show_axis(false), show_wireframe(false), needs_update(false),
+    : left_mouse_button_pressed(false), right_mouse_button_pressed(false),
+      width(width), height(height), length(length), ip(ip), port(port),
+      universes_per_layer(universes_per_layer), alpha(alpha), show_axis(false),
+      show_wireframe(false), needs_update(false),
       socket(io_service, boost::asio::ip::udp::endpoint(
                              boost::asio::ip::address::from_string(ip), port)) {
 
@@ -221,8 +221,14 @@ void VolumetricDisplay::listenArtNet() {
   while (running) {
     std::array<char, 1024> buffer;
     boost::asio::ip::udp::endpoint sender_endpoint;
-    size_t length =
+    size_t total_length =
         socket.receive_from(boost::asio::buffer(buffer), sender_endpoint);
+
+    if (total_length < 10) {
+      std::cout << "Received packet too short (" << total_length << " B)"
+                << std::endl;
+      continue;
+    }
 
     if (strncmp(buffer.data(), "Art-Net\0", 8) != 0) {
       std::cout << "Received non-Art-Net packet" << std::endl;
@@ -230,6 +236,7 @@ void VolumetricDisplay::listenArtNet() {
     }
 
     uint16_t opcode = *reinterpret_cast<uint16_t *>(&buffer[8]);
+
     if (opcode == 0x5000) { // DMX Data
       uint16_t universe = *reinterpret_cast<uint16_t *>(&buffer[14]);
       uint16_t length = ntohs(*reinterpret_cast<uint16_t *>(&buffer[16]));
@@ -238,7 +245,8 @@ void VolumetricDisplay::listenArtNet() {
       int universe_in_layer = universe % universes_per_layer;
       int start_pixel = universe_in_layer * 170;
 
-      for (int i = 0; i < length && (start_pixel + i / 3) < width * height;
+      for (int i = 0; i < length && (start_pixel + i / 3) < width * height &&
+                      (18 + i + 2 < total_length);
            i += 3) {
         int idx = start_pixel + i / 3;
         int x = idx % width;
