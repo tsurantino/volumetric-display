@@ -41,6 +41,7 @@ private:
                    int mods);
   void framebufferSizeCallback(GLFWwindow *window, int width, int height);
   void updateCamera();
+  void drawWireframeCube();
 
   glm::vec3 camera_position;
   glm::quat camera_orientation;
@@ -61,6 +62,7 @@ private:
   float alpha;
   std::atomic<bool> running;
   bool show_axis;
+  bool show_wireframe;
   std::atomic<bool> needs_update;
   std::thread artnet_thread;
 

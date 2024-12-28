@@ -20,7 +20,7 @@ VolumetricDisplay::VolumetricDisplay(int width, int height, int length,
     : width(width), height(height), length(length), ip(ip), port(port),
       universes_per_layer(universes_per_layer), alpha(alpha),
       left_mouse_button_pressed(false), right_mouse_button_pressed(false),
-      show_axis(false), needs_update(false),
+      show_axis(false), show_wireframe(false), needs_update(false),
       socket(io_service, boost::asio::ip::udp::endpoint(
                              boost::asio::ip::address::from_string(ip), port)) {
 
@@ -50,6 +50,42 @@ VolumetricDisplay::VolumetricDisplay(int width, int height, int length,
 }
 
 VolumetricDisplay::~VolumetricDisplay() { cleanup(); }
+
+void VolumetricDisplay::drawWireframeCube() {
+  glPushMatrix();
+  glTranslatef(-0.5f, -0.5f, -0.5f);
+  glColor3f(1.0f, 1.0f, 1.0f);
+  glBegin(GL_LINES);
+  // Bottom face
+  glVertex3f(0.0f, 0.0f, 0.0f);
+  glVertex3f(width, 0.0f, 0.0f);
+  glVertex3f(width, 0.0f, 0.0f);
+  glVertex3f(width, height, 0.0f);
+  glVertex3f(width, height, 0.0f);
+  glVertex3f(0.0f, height, 0.0f);
+  glVertex3f(0.0f, height, 0.0f);
+  glVertex3f(0.0f, 0.0f, 0.0f);
+  // Top face
+  glVertex3f(0.0f, 0.0f, length);
+  glVertex3f(width, 0.0f, length);
+  glVertex3f(width, 0.0f, length);
+  glVertex3f(width, height, length);
+  glVertex3f(width, height, length);
+  glVertex3f(0.0f, height, length);
+  glVertex3f(0.0f, height, length);
+  glVertex3f(0.0f, 0.0f, length);
+  // Vertical lines
+  glVertex3f(0.0f, 0.0f, 0.0f);
+  glVertex3f(0.0f, 0.0f, length);
+  glVertex3f(width, 0.0f, 0.0f);
+  glVertex3f(width, 0.0f, length);
+  glVertex3f(width, height, 0.0f);
+  glVertex3f(width, height, length);
+  glVertex3f(0.0f, height, 0.0f);
+  glVertex3f(0.0f, height, length);
+  glEnd();
+  glPopMatrix();
+}
 
 void VolumetricDisplay::setupOpenGL() {
   if (!glfwInit()) {
@@ -92,10 +128,11 @@ void VolumetricDisplay::setupOpenGL() {
         ->keyCallback(window, key, scancode, action, mods);
   });
 
-  glfwSetFramebufferSizeCallback(window, [](GLFWwindow *window, int width, int height) {
-    static_cast<VolumetricDisplay *>(glfwGetWindowUserPointer(window))
-        ->framebufferSizeCallback(window, width, height);
-  });
+  glfwSetFramebufferSizeCallback(
+      window, [](GLFWwindow *window, int width, int height) {
+        static_cast<VolumetricDisplay *>(glfwGetWindowUserPointer(window))
+            ->framebufferSizeCallback(window, width, height);
+      });
 
   glEnable(GL_DEPTH_TEST);
   glEnable(GL_LIGHTING);
@@ -257,11 +294,13 @@ void VolumetricDisplay::cleanup() {
   glfwTerminate();
 }
 
-void VolumetricDisplay::framebufferSizeCallback(GLFWwindow *window, int width, int height) {
+void VolumetricDisplay::framebufferSizeCallback(GLFWwindow *window, int width,
+                                                int height) {
   glViewport(0, 0, width, height);
   viewport_width = width;
   viewport_height = height;
-  viewport_aspect = static_cast<float>(viewport_width) / static_cast<float>(viewport_height);
+  viewport_aspect =
+      static_cast<float>(viewport_width) / static_cast<float>(viewport_height);
 }
 
 void VolumetricDisplay::updateCamera() {
@@ -319,6 +358,10 @@ void VolumetricDisplay::render() {
     glPopMatrix();
   }
 
+  if (show_wireframe) {
+    drawWireframeCube();
+  }
+
   glDisableClientState(GL_VERTEX_ARRAY);
   glDisableClientState(GL_COLOR_ARRAY);
 
@@ -329,6 +372,10 @@ void VolumetricDisplay::keyCallback(GLFWwindow *window, int key, int scancode,
                                     int action, int mods) {
   if (key == GLFW_KEY_A && action == GLFW_PRESS) {
     show_axis = !show_axis;
+  }
+
+  if (key == GLFW_KEY_B && action == GLFW_PRESS) {
+    show_wireframe = !show_wireframe;
   }
 }
 

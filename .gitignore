@@ -2,3 +2,4 @@ experiments/
 external
 MODULE.bazel.lock
 bazel-*
+__pycache__
