@@ -12,7 +12,6 @@ jobs:
       - uses: cachix/install-nix-action@v27
         with:
           nix_path: nixpkgs=channel:nixos-unstable
-      - run: nix-build
       - uses: bazelbuild/setup-bazelisk@v3
       - name: Mount bazel cache
         uses: actions/cache@v4
