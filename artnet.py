@@ -15,6 +15,44 @@ class RGB:
     green: int
     blue: int
 
+    def from_hsv(hsv):
+        """
+        Convert an HSV color to RGB.
+        """
+        h = hsv.hue / (256 / 6)
+        s = hsv.saturation / 255
+        v = hsv.value / 255
+
+        c = v * s
+        x = c * (1 - abs(h % 2 - 1))
+        m = v - c
+
+        if h < 1:
+            r, g, b = c, x, 0
+        elif h < 2:
+            r, g, b = x, c, 0
+        elif h < 3:
+            r, g, b = 0, c, x
+        elif h < 4:
+            r, g, b = 0, x, c
+        elif h < 5:
+            r, g, b = x, 0, c
+        else:
+            r, g, b = c, 0, x
+
+        return RGB(saturate_u8((r + m) * 255), saturate_u8((g + m) * 255),
+                   saturate_u8((b + m) * 255))
+
+
+@dataclasses.dataclass
+class HSV:
+    """
+    Simple HSV color data class.
+    """
+    hue: int
+    saturation: int
+    value: int
+
 
 @dataclasses.dataclass
 class Raster:
@@ -49,7 +87,7 @@ class Scene(ABC):
     def render(self, raster: Raster, time: float) -> None:
         """
         Update the raster for the current frame
-        
+
         Args:
             raster: The Raster object to update
             time: Current time in seconds
@@ -60,13 +98,13 @@ class Scene(ABC):
 def load_scene(path: str) -> Scene:
     """
     Load a scene plugin from a Python file
-    
+
     Args:
         path: Path to the Python file containing the scene
-        
+
     Returns:
         An instance of the scene class
-        
+
     Raises:
         ImportError: If the scene cannot be loaded
         ValueError: If the scene doesn't contain exactly one Scene subclass
@@ -150,14 +188,16 @@ class ArtNetController:
                  base_universe,
                  raster,
                  channels_per_universe=510,
-                 universes_per_layer=6):
+                 universes_per_layer=6,
+                 channel_span=1):
         """
         Send the ArtNet DMX packet via UDP.
         """
         # Send DMX Data Packet
         data = bytearray()
-        for z in range(raster.length):
-            universe = z * universes_per_layer + base_universe
+        for z in range(0, raster.length, channel_span):
+            universe = (z //
+                        channel_span) * universes_per_layer + base_universe
             layer = raster.data[z * raster.width * raster.height:(z + 1) *
                                 raster.width * raster.height]
 

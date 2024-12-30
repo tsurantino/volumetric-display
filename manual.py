@@ -55,6 +55,10 @@ def main():
                         type=str,
                         default="20x20x20",
                         help="Raster geometry (e.g., 20x20x20)")
+    parser.add_argument("--layer-span",
+                        type=int,
+                        default=1,
+                        help="Layer span (1 for 1:1 mapping)")
     parser.add_argument("--brightness",
                         type=float,
                         default=0.05,
@@ -89,7 +93,7 @@ def main():
             scene.render(raster, current_time)
 
             # Send the updated raster
-            controller.send_dmx(UNIVERSE, raster)
+            controller.send_dmx(UNIVERSE, raster, channel_span=args.layer_span)
             time.sleep(0.01)  # Send updates at 100Hz
 
     except KeyboardInterrupt:
