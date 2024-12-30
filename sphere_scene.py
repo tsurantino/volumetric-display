@@ -1,4 +1,4 @@
-from artnet import Scene, RGB, Raster
+from artnet import HSV, RGB, Raster, Scene
 import random
 import math
 from dataclasses import dataclass
@@ -165,8 +165,7 @@ class BouncingSphereScene(Scene):
         vz = speed * math.sin(angle)
 
         # Random color
-        color = RGB(random.randint(100, 255), random.randint(100, 255),
-                    random.randint(100, 255))
+        color = RGB.from_hsv(HSV(random.randint(0, 255), 255, 255))
 
         mass = radius**3  # Mass scales by the radius cubed
 
@@ -197,7 +196,7 @@ class BouncingSphereScene(Scene):
         # Update and render spheres
         bounds = (raster.width, raster.height, raster.length)
         new_spheres = []
-        dt = 0.02  # Smaller timestep for better physics
+        dt = 0.01  # Smaller timestep for better physics
 
         # Update physics
         for sphere in self.spheres:
