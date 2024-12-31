@@ -1,3 +1,6 @@
+load("@rules_python//python:defs.bzl", "py_binary", "py_library")
+load("@py_deps//:requirements.bzl", "requirement")
+
 cc_library(
     name = "volumetric_display",
     srcs = ["VolumetricDisplay.cpp"],
@@ -15,7 +18,7 @@ cc_library(
 )
 
 cc_binary(
-    name = "main",
+    name = "simulator",
     srcs = [":main.cpp"],
     linkopts = select({
         "@platforms//os:linux": [
@@ -32,5 +35,24 @@ cc_binary(
         "@abseil-cpp//absl/flags:flag",
         "@abseil-cpp//absl/flags:parse",
         "@glm",
+    ],
+)
+
+py_binary(
+    name = "discover",
+    srcs = ["discover.py"],
+    deps = [requirement("netifaces")],
+)
+
+py_library(
+    name = "artnet",
+    srcs = ["artnet.py"],
+)
+
+py_binary(
+    name = "sender",
+    srcs = ["sender.py"],
+    deps = [
+        ":artnet",
     ],
 )
