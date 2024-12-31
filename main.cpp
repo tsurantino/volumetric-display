@@ -11,6 +11,7 @@ ABSL_FLAG(std::string, ip, "127.0.0.1",
 ABSL_FLAG(int, port, 6454, "Port to listen for ArtNet packets");
 ABSL_FLAG(int, universes_per_layer, 6, "Number of universes per layer");
 ABSL_FLAG(float, alpha, 0.5, "Alpha value for voxel colors");
+ABSL_FLAG(int, layer_span, 1, "Layer span (1 for 1:1 mapping)");
 
 // Entry point
 int main(int argc, char *argv[]) {
@@ -23,6 +24,7 @@ int main(int argc, char *argv[]) {
     std::string ip = absl::GetFlag(FLAGS_ip);
     int port = absl::GetFlag(FLAGS_port);
     int universes_per_layer = absl::GetFlag(FLAGS_universes_per_layer);
+    int layer_span = absl::GetFlag(FLAGS_layer_span);
 
     float alpha = absl::GetFlag(FLAGS_alpha);
 
@@ -42,7 +44,7 @@ int main(int argc, char *argv[]) {
 
     // Create and run the volumetric display
     VolumetricDisplay display(width, height, length, ip, port,
-                              universes_per_layer, alpha);
+                              universes_per_layer, layer_span, alpha);
     display.run();
 
   } catch (const std::exception &ex) {

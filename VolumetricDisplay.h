@@ -18,7 +18,8 @@ constexpr int MAX_UNIVERSES_PER_LAYER = 10;
 class VolumetricDisplay {
 public:
   VolumetricDisplay(int width, int height, int length, const std::string &ip,
-                    int port, int universes_per_layer, float alpha);
+                    int port, int universes_per_layer, int layer_span,
+                    float alpha);
   ~VolumetricDisplay();
 
   void run();
@@ -57,6 +58,7 @@ private:
   std::string ip;
   int port;
   int universes_per_layer;
+  int layer_span;
 
   std::vector<std::array<unsigned char, 3>> pixels; // RGB for each voxel
   float alpha;

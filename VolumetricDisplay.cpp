@@ -16,11 +16,13 @@
 
 VolumetricDisplay::VolumetricDisplay(int width, int height, int length,
                                      const std::string &ip, int port,
-                                     int universes_per_layer, float alpha)
+                                     int universes_per_layer, int layer_span,
+                                     float alpha)
     : left_mouse_button_pressed(false), right_mouse_button_pressed(false),
       width(width), height(height), length(length), ip(ip), port(port),
-      universes_per_layer(universes_per_layer), alpha(alpha), show_axis(false),
-      show_wireframe(false), needs_update(false),
+      universes_per_layer(universes_per_layer), layer_span(layer_span),
+      alpha(alpha), show_axis(false), show_wireframe(false),
+      needs_update(false),
       socket(io_service, boost::asio::ip::udp::endpoint(
                              boost::asio::ip::address::from_string(ip), port)) {
 
@@ -28,7 +30,7 @@ VolumetricDisplay::VolumetricDisplay(int width, int height, int length,
     throw std::runtime_error("Layer size too large for ArtNet limitations");
   }
 
-  pixels.resize(width * height * length, {0, 0, 0});
+  pixels.resize(width * height * (length / layer_span), {0, 0, 0});
 
   running = true;
   needs_update = false;
@@ -149,12 +151,12 @@ void VolumetricDisplay::setupVBO() {
   std::vector<GLuint> indices;
 
   vertex_count =
-      width * height * length *
+      width * height * (length / layer_span) *
       36; // 36 indices per voxel (6 faces * 2 triangles * 3 vertices)
 
   for (int x = 0; x < width; ++x) {
     for (int y = 0; y < height; ++y) {
-      for (int z = 0; z < length; ++z) {
+      for (int z = 0; z < length * layer_span; z += layer_span) {
         GLfloat size = 0.1f;
 
         // Define the 8 corners of the cube
