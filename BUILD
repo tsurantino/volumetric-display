@@ -62,6 +62,11 @@ py_binary(
     ],
 )
 
+py_binary(
+    name = "gen_routing_table",
+    srcs = ["gen_routing_table.py"],
+)
+
 refresh_compile_commands(
     name = "refresh_compile_commands",
 
