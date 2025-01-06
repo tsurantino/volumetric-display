@@ -58,6 +58,7 @@ py_binary(
     srcs = ["sender.py"],
     deps = [
         ":artnet",
+        requirement("numpy"),
     ],
 )
 
