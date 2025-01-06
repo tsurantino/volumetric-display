@@ -11,6 +11,7 @@ cc_library(
         "-Wno-deprecated-declarations",
     ],
     deps = [
+        "@abseil-cpp//absl/log",
         "@boost",
         "@glew",
         "@glfw",
@@ -35,6 +36,8 @@ cc_binary(
         ":volumetric_display",
         "@abseil-cpp//absl/flags:flag",
         "@abseil-cpp//absl/flags:parse",
+        "@abseil-cpp//absl/log:flags",
+        "@abseil-cpp//absl/log:initialize",
         "@glm",
     ],
 )

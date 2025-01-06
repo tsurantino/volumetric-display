@@ -1,4 +1,5 @@
 #include "VolumetricDisplay.h"
+#include "absl/log/log.h"
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
 #include <algorithm>
@@ -8,7 +9,6 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
-#include <iostream>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -219,21 +219,33 @@ void VolumetricDisplay::setupVBO() {
 }
 
 void VolumetricDisplay::listenArtNet() {
-  std::cout << "Listening for Art-Net on " << ip << ":" << port << std::endl;
+  LOG(INFO) << "Listening for Art-Net on " << ip << ":" << port;
   while (running) {
     std::array<char, 1024> buffer;
     boost::asio::ip::udp::endpoint sender_endpoint;
-    size_t total_length =
-        socket.receive_from(boost::asio::buffer(buffer), sender_endpoint);
+    boost::system::error_code ec;
+    size_t total_length = socket.receive_from(boost::asio::buffer(buffer),
+                                              sender_endpoint, 0, ec);
+
+    if (ec == boost::asio::error::operation_aborted) {
+      LOG(WARNING) << "Receive operation cancelled";
+      continue;
+    } else if (ec) {
+      if (!running) {
+        // Assume that the error is due to the socket being closed.
+        break;
+      }
+      LOG(ERROR) << "Error receiving data: " << ec.message();
+      break;
+    }
 
     if (total_length < 10) {
-      std::cout << "Received packet too short (" << total_length << " B)"
-                << std::endl;
+      LOG(ERROR) << "Received packet too short (" << total_length << " B)";
       continue;
     }
 
     if (strncmp(buffer.data(), "Art-Net\0", 8) != 0) {
-      std::cout << "Received non-Art-Net packet" << std::endl;
+      LOG(ERROR) << "Received non-Art-Net packet";
       continue;
     }
 
@@ -243,6 +255,8 @@ void VolumetricDisplay::listenArtNet() {
       uint16_t universe = *reinterpret_cast<uint16_t *>(&buffer[14]);
       uint16_t length = ntohs(*reinterpret_cast<uint16_t *>(&buffer[16]));
 
+      VLOG(1) << "Received DMX Data packet of length " << length
+              << " for universe " << universe;
       int layer = universe / universes_per_layer;
       int universe_in_layer = universe % universes_per_layer;
       int start_pixel = universe_in_layer * 170;
@@ -262,9 +276,10 @@ void VolumetricDisplay::listenArtNet() {
                                (unsigned char)buffer[18 + i + 2]};
       }
     } else if (opcode == 0x5200) {
+      VLOG(1) << "Received sync packet";
       needs_update = true;
     } else {
-      std::cout << "Received unknown opcode: " << opcode << std::endl;
+      LOG(ERROR) << "Received unknown opcode: " << opcode;
     }
   }
 }
@@ -299,8 +314,10 @@ void VolumetricDisplay::run() {
 
 void VolumetricDisplay::cleanup() {
   running = false;
-  artnet_thread.join();
-  socket.close();
+  socket.close(); // Close socket first to unblock the receive operation
+  if (artnet_thread.joinable()) {
+    artnet_thread.join();
+  }
   glfwTerminate();
 }
 
@@ -396,7 +413,12 @@ void VolumetricDisplay::rotate(float angle, float x, float y, float z) {
 }
 
 void VolumetricDisplay::windowCloseCallback(GLFWwindow *window) {
+  VLOG(0) << "Window closed";
   running = false;
+  socket.close(); // Close socket first to unblock the receive operation
+  if (artnet_thread.joinable()) {
+    artnet_thread.join();
+  }
 }
 
 void VolumetricDisplay::mouseButtonCallback(GLFWwindow *window, int button,

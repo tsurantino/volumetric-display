@@ -1,6 +1,8 @@
 #include "VolumetricDisplay.h"
 #include "absl/flags/flag.h"
 #include "absl/flags/parse.h"
+#include "absl/log/initialize.h"
+#include "absl/log/log.h"
 #include <iostream>
 
 // Define command-line flags using Abseil
@@ -17,6 +19,8 @@ ABSL_FLAG(int, layer_span, 1, "Layer span (1 for 1:1 mapping)");
 int main(int argc, char *argv[]) {
   // Parse command-line arguments using Abseil
   absl::ParseCommandLine(argc, argv);
+
+  // absl::InitializeLog();
 
   try {
     // Extract parsed arguments
@@ -35,12 +39,11 @@ int main(int argc, char *argv[]) {
           "Invalid geometry format. Use WIDTHxHEIGHTxLENGTH (e.g., 16x16x16).");
     }
 
-    std::cout << "Starting Volumetric Display with the following parameters:\n";
-    std::cout << "Geometry: " << width << "x" << height << "x" << length
-              << "\n";
-    std::cout << "IP: " << ip << "\n";
-    std::cout << "Port: " << port << "\n";
-    std::cout << "Universes per layer: " << universes_per_layer << "\n";
+    LOG(INFO) << "Starting Volumetric Display with the following parameters:";
+    LOG(INFO) << "Geometry: " << width << "x" << height << "x" << length;
+    LOG(INFO) << "IP: " << ip;
+    LOG(INFO) << "Port: " << port;
+    LOG(INFO) << "Universes per layer: " << universes_per_layer;
 
     // Create and run the volumetric display
     VolumetricDisplay display(width, height, length, ip, port,
