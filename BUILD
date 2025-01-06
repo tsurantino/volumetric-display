@@ -1,5 +1,6 @@
 load("@rules_python//python:defs.bzl", "py_binary", "py_library")
 load("@py_deps//:requirements.bzl", "requirement")
+load("@hedron_compile_commands//:refresh_compile_commands.bzl", "refresh_compile_commands")
 
 cc_library(
     name = "volumetric_display",
@@ -54,5 +55,15 @@ py_binary(
     srcs = ["sender.py"],
     deps = [
         ":artnet",
+    ],
+)
+
+refresh_compile_commands(
+    name = "refresh_compile_commands",
+
+    # Specify the targets of interest.
+    # For example, specify a dict of targets and any flags required to build.
+    targets = [
+        ":simulator",
     ],
 )
