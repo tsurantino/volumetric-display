@@ -30,10 +30,13 @@ cc_binary(
         "@platforms//os:osx": [
             "-framework",
             "OpenGL",
+            "-framework",
+            "Cocoa",
         ],
     }),
     deps = [
         ":volumetric_display",
+        "//resources:icon",
         "@abseil-cpp//absl/flags:flag",
         "@abseil-cpp//absl/flags:parse",
         "@abseil-cpp//absl/log:flags",

@@ -1,8 +1,8 @@
 #include "VolumetricDisplay.h"
 #include "absl/flags/flag.h"
 #include "absl/flags/parse.h"
-#include "absl/log/initialize.h"
 #include "absl/log/log.h"
+#include "resources/icon.h"
 #include <iostream>
 
 // Define command-line flags using Abseil
@@ -19,8 +19,6 @@ ABSL_FLAG(int, layer_span, 1, "Layer span (1 for 1:1 mapping)");
 int main(int argc, char *argv[]) {
   // Parse command-line arguments using Abseil
   absl::ParseCommandLine(argc, argv);
-
-  // absl::InitializeLog();
 
   try {
     // Extract parsed arguments
@@ -48,6 +46,10 @@ int main(int argc, char *argv[]) {
     // Create and run the volumetric display
     VolumetricDisplay display(width, height, length, ip, port,
                               universes_per_layer, layer_span, alpha);
+
+    // Configure icon
+    SetIcon(argv[0]);
+
     display.run();
 
   } catch (const std::exception &ex) {
