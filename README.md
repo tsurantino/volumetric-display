@@ -1,5 +1,7 @@
 # Volumetric Display Project
 
+[![Build Status](https://github.com/fughilli/volumetric-display/actions/workflows/test.yaml/badge.svg)](https://github.com/fughilli/volumetric-display/blob/main/.github/workflows/test.yaml)
+
 ## Prerequisites
 
 Make sure you have the following tools installed:
