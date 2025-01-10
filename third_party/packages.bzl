@@ -53,15 +53,8 @@ def register_packages():
         # bring it in via nixpkgs.withPackages.
         nix_file_content = """
           with import <nixpkgs> {};
-          let py3_netifaces = python3.withPackages (ps: with ps; [
+          python3.withPackages (ps: with ps; [
             netifaces
-          ]);
-          in symlinkJoin {
-            name = "python3-joined";
-            paths = [
-              py3_netifaces
-              python3
-            ];
-          }
+          ])
         """,
     )
