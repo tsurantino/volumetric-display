@@ -48,7 +48,6 @@ cc_binary(
 py_binary(
     name = "discover",
     srcs = ["discover.py"],
-    deps = [requirement("netifaces")],
 )
 
 py_library(

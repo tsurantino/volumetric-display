@@ -1,7 +1,6 @@
 load("@io_tweag_rules_nixpkgs//nixpkgs:nixpkgs.bzl", "nixpkgs_package")
 
 standard_packages = [
-    "python3",
     "glm",
     "boost",
     "glew",
@@ -46,3 +45,16 @@ def register_packages():
             repositories = {"nixpkgs": "@nixpkgs"},
             **kwargs
         )
+
+    nixpkgs_package(
+        name = "python3",
+        repositories = {"nixpkgs": "@nixpkgs"},
+        # netifaces fails to build in the nixpkgs environment on macOS, so we
+        # bring it in via nixpkgs.withPackages.
+        nix_file_content = """
+          with import <nixpkgs> {};
+          python3.withPackages (ps: with ps; [
+            netifaces
+          ])
+        """,
+    )
