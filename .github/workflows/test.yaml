@@ -29,8 +29,9 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y -qq libgl-dev libglu1-mesa-dev python3 build-essential
 
+      # Test fails with unable to find @python3/:bin/python3
       - name: Build
-        run: bazel test //...
+        run: bazel build //...
 
   test-darwin:
     runs-on: macos-latest
@@ -52,5 +53,5 @@ jobs:
           path: "~/.cache/bazel"
           key: bazel
 
-      - name: Build
+      - name: Test
         run: bazel test //...
