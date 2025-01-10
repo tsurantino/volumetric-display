@@ -14,6 +14,7 @@ cc_library(
             "objective-c++",
             "-fobjc-arc",
         ],
+        "//conditions:default": [],
     }),
     data = [
         "icon.png",

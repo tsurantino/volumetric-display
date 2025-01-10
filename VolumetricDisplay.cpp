@@ -142,7 +142,9 @@ void VolumetricDisplay::setupOpenGL() {
   glEnable(GL_BLEND);
   glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
   glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE);
-  glLightModelfv(GL_LIGHT_MODEL_AMBIENT, (GLfloat[]){1.0, 1.0, 1.0, 1.0});
+
+  const GLfloat kLightColor[] = {1.0f, 1.0f, 1.0f, 1.0f};
+  glLightModelfv(GL_LIGHT_MODEL_AMBIENT, kLightColor);
 }
 
 void VolumetricDisplay::setupVBO() {
@@ -261,13 +263,16 @@ void VolumetricDisplay::listenArtNet() {
       int universe_in_layer = universe % universes_per_layer;
       int start_pixel = universe_in_layer * 170;
 
-      for (int i = 0; i < length && (start_pixel + i / 3) < width * height &&
-                      (18 + i + 2 < total_length);
+      for (size_t i = 0;
+           i < length &&
+           (start_pixel + static_cast<int>(i) / 3) < width * height &&
+           (18 + i + 2 < total_length);
            i += 3) {
         int idx = start_pixel + i / 3;
         int x = idx % width;
         int y = idx / width;
-        int pixel_index = x + y * width + layer * width * height;
+        size_t pixel_index =
+            static_cast<size_t>(x + y * width + layer * width * height);
         if (pixel_index >= pixels.size()) {
           continue;
         }

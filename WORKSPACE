@@ -68,7 +68,8 @@ pip_parse(
     name = "py_deps",
     extra_pip_args = ["--no-cache-dir"],
     python_interpreter_target = "@python3//:bin/python",
-    requirements_lock = "//third_party:requirements.txt",
+    requirements_darwin = "//third_party:requirements_darwin.txt",
+    requirements_linux = "//third_party:requirements_linux.txt",
 )
 
 load("@py_deps//:requirements.bzl", "install_deps")

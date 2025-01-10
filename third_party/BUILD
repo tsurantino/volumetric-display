@@ -6,7 +6,8 @@ load("@rules_python//python:pip.bzl", "compile_pip_requirements")
 compile_pip_requirements(
     name = "requirements",
     src = "requirements.in",
-    requirements_txt = "requirements.txt",
+    requirements_linux = "requirements_linux.txt",
+    requirements_darwin = "requirements_darwin.txt",
 )
 
 # Python toolchain

@@ -1,5 +1,5 @@
-#include "resources/icon.h"
+#include "resources/icon_helper.h"
 
-void SetIcon() {
+void SetIconHelper(std::string icon_path) {
   // Not implemented.
 }
