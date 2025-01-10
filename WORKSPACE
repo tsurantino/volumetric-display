@@ -67,7 +67,7 @@ load("@rules_python//python:pip.bzl", "pip_parse")
 pip_parse(
     name = "py_deps",
     extra_pip_args = ["--no-cache-dir"],
-    python_interpreter_target = "@python3//:bin/python",
+    python_interpreter_target = "@python3//:bin/python3",
     requirements_darwin = "//third_party:requirements_darwin.txt",
     requirements_linux = "//third_party:requirements_linux.txt",
 )
