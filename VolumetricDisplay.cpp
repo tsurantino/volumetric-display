@@ -145,6 +145,11 @@ void VolumetricDisplay::setupOpenGL() {
 
   const GLfloat kLightColor[] = {1.0f, 1.0f, 1.0f, 1.0f};
   glLightModelfv(GL_LIGHT_MODEL_AMBIENT, kLightColor);
+
+  glfwGetFramebufferSize(window, &viewport_width, &viewport_height);
+  glViewport(0, 0, viewport_width, viewport_height);
+  viewport_aspect =
+      static_cast<float>(viewport_width) / static_cast<float>(viewport_height);
 }
 
 void VolumetricDisplay::setupVBO() {
