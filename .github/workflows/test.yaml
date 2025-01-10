@@ -32,6 +32,10 @@ jobs:
       - name: Build
         run: bazel test //...
 
+      - name: Setup tmate session
+        if: success() || failure()
+        uses: mxschmitt/action-tmate@v3
+
   test-darwin:
     runs-on: macos-latest
     steps:
