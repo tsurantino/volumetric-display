@@ -14,6 +14,8 @@
 #include <thread>
 #include <vector>
 
+#include "color_correction.h"
+
 VolumetricDisplay::VolumetricDisplay(int width, int height, int length,
                                      const std::string &ip, int port,
                                      int universes_per_layer, int layer_span,
@@ -29,6 +31,10 @@ VolumetricDisplay::VolumetricDisplay(int width, int height, int length,
   if (universes_per_layer > MAX_UNIVERSES_PER_LAYER) {
     throw std::runtime_error("Layer size too large for ArtNet limitations");
   }
+
+  LOG(INFO) << "Color corrector brightness R=" << util::kColorCorrectorWs2812bOptions.brightness[0]
+            << " G=" << util::kColorCorrectorWs2812bOptions.brightness[1]
+            << " B=" << util::kColorCorrectorWs2812bOptions.brightness[2];
 
   pixels.resize(width * height * (length / layer_span), {0, 0, 0});
 
@@ -268,6 +274,7 @@ void VolumetricDisplay::listenArtNet() {
       int universe_in_layer = universe % universes_per_layer;
       int start_pixel = universe_in_layer * 170;
 
+      auto lg = std::lock_guard(pixels_mu);
       for (size_t i = 0;
            i < length &&
            (start_pixel + static_cast<int>(i) / 3) < width * height &&
@@ -285,6 +292,7 @@ void VolumetricDisplay::listenArtNet() {
                                (unsigned char)buffer[18 + i + 1],
                                (unsigned char)buffer[18 + i + 2]};
       }
+      view_update.notify_all();
     } else if (opcode == 0x5200) {
       VLOG(1) << "Received sync packet";
       needs_update = true;
@@ -298,7 +306,12 @@ void VolumetricDisplay::updateColors() {
   glBindBuffer(GL_ARRAY_BUFFER, vbo_colors);
   std::vector<GLfloat> colors;
 
-  for (const auto &pixel : pixels) {
+  auto lg = std::unique_lock(pixels_mu);
+
+  view_update.wait_for(lg, std::chrono::milliseconds(100));
+
+  for (auto pixel : pixels) {
+    color_corrector_.ReverseCorrectInPlace(pixel.data());
     GLfloat r = pixel[0] / 255.0f;
     GLfloat g = pixel[1] / 255.0f;
     GLfloat b = pixel[2] / 255.0f;
@@ -338,6 +351,8 @@ void VolumetricDisplay::framebufferSizeCallback(GLFWwindow *window, int width,
   viewport_height = height;
   viewport_aspect =
       static_cast<float>(viewport_width) / static_cast<float>(viewport_height);
+
+  view_update.notify_all();
 }
 
 void VolumetricDisplay::updateCamera() {
@@ -414,6 +429,8 @@ void VolumetricDisplay::keyCallback(GLFWwindow *window, int key, int scancode,
   if (key == GLFW_KEY_B && action == GLFW_PRESS) {
     show_wireframe = !show_wireframe;
   }
+
+  view_update.notify_all();
 }
 
 void VolumetricDisplay::rotate(float angle, float x, float y, float z) {
@@ -429,6 +446,8 @@ void VolumetricDisplay::windowCloseCallback(GLFWwindow *window) {
   if (artnet_thread.joinable()) {
     artnet_thread.join();
   }
+
+  view_update.notify_all();
 }
 
 void VolumetricDisplay::mouseButtonCallback(GLFWwindow *window, int button,
@@ -447,6 +466,8 @@ void VolumetricDisplay::mouseButtonCallback(GLFWwindow *window, int button,
       left_mouse_button_pressed = false;
     }
   }
+
+  view_update.notify_all();
 }
 
 void VolumetricDisplay::cursorPositionCallback(GLFWwindow *window, double xpos,
@@ -463,6 +484,8 @@ void VolumetricDisplay::cursorPositionCallback(GLFWwindow *window, double xpos,
   }
   last_mouse_x = xpos;
   last_mouse_y = ypos;
+
+  view_update.notify_all();
 }
 
 void VolumetricDisplay::scrollCallback(GLFWwindow *window, double xoffset,
@@ -471,4 +494,6 @@ void VolumetricDisplay::scrollCallback(GLFWwindow *window, double xoffset,
   if (camera_distance < 1.0f) {
     camera_distance = 1.0f;
   }
+
+  view_update.notify_all();
 }

@@ -11,6 +11,7 @@ cc_library(
         "-Wno-deprecated-declarations",
     ],
     deps = [
+        ":color_correction",
         "@abseil-cpp//absl/log",
         "@boost",
         "@glew",
@@ -77,4 +78,9 @@ refresh_compile_commands(
     targets = [
         ":simulator",
     ],
+)
+
+cc_library(
+    name = "color_correction",
+    hdrs = [":color_correction.h"],
 )

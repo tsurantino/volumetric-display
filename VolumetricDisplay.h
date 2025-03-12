@@ -9,8 +9,11 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtx/quaternion.hpp>
+#include <mutex>
 #include <thread>
 #include <vector>
+
+#include "color_correction.h"
 
 // Define the maximum universes per layer
 constexpr int MAX_UNIVERSES_PER_LAYER = 10;
@@ -60,6 +63,8 @@ private:
   int universes_per_layer;
   int layer_span;
 
+  std::mutex pixels_mu;
+  std::condition_variable view_update;
   std::vector<std::array<unsigned char, 3>> pixels; // RGB for each voxel
   float alpha;
   std::atomic<bool> running;
@@ -78,6 +83,9 @@ private:
 
   boost::asio::io_service io_service;
   boost::asio::ip::udp::socket socket;
+
+  util::ReverseColorCorrector<3> color_corrector_{
+      util::kColorCorrectorWs2812bOptions};
 };
 
 #endif // VOLUMETRIC_DISPLAY_H
