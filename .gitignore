@@ -5,3 +5,6 @@ bazel-*
 __pycache__
 .DS_Store
 touchdesigner/experimental/
+touchdesigner/CrashAutoSave.*
+touchdesigner/Backup/*
+touchdesigner/donut.*.toe
