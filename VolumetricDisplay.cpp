@@ -316,6 +316,11 @@ void VolumetricDisplay::updateColors() {
     GLfloat g = pixel[1] / 255.0f;
     GLfloat b = pixel[2] / 255.0f;
     GLfloat a = alpha;
+
+    // If the color is black, make it transparent
+    if (r == 0.0f && g == 0.0f && b == 0.0f) {
+      a = 0.0f;
+    }
     for (int i = 0; i < 8; ++i) {
       colors.push_back(r);
       colors.push_back(g);
