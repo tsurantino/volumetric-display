@@ -62,6 +62,7 @@ py_binary(
     deps = [
         ":artnet",
         requirement("numpy"),
+        requirement("pygame"),
     ],
 )
 
@@ -83,4 +84,9 @@ refresh_compile_commands(
 cc_library(
     name = "color_correction",
     hdrs = [":color_correction.h"],
+)
+
+py_library(
+    name = "control_port",
+    srcs = ["control_port.py"],
 )
