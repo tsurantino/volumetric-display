@@ -4,6 +4,10 @@ import pygame
 from pygame.locals import *
 from enum import Enum
 import random
+import asyncio
+import threading
+import control_port # Assuming control_port.py is in the same directory or PYTHONPATH
+from collections import deque # Import deque
 
 white = RGB(255, 255, 255)
 red = RGB(255, 0, 0)
@@ -49,16 +53,170 @@ class PygameInputHandler:
                     return Direction.RIGHT
         return None
 
+class ControllerInputHandler:
+    def __init__(self):
+        self.last_button_states = [False] * 5 # LEFT, UP, RIGHT, DOWN, SELECT
+        self.cp = control_port.ControlPort()
+        self.controller = None
+        self.listen_task = None
+        self._lock = threading.Lock()
+        self.initialized = False
+        self.event_queue = deque() # Queue for button down events
+        self.init_event = threading.Event() # To signal initialization completion
+        self.loop = None # Will be set by the asyncio thread
+        self._init_task = None
+        self._listen_task = None
+
+    async def _async_initialize_and_listen(self):
+        """Runs in the asyncio thread to initialize and start listening."""
+        print("Enumerating controllers...")
+        # Use get_running_loop() as ControlPort methods expect it
+        try:
+            controllers = await self.cp.enumerate(timeout=5.0)
+            if not controllers:
+                print("No controllers found.")
+                self.controller = None
+                self.initialized = False
+            else:
+                # Get the first controller found
+                ip, state = list(controllers.items())[0]
+                print(f"Found controller at {ip}")
+                if await state.connect():
+                    print(f"Connected to controller {ip}")
+                    self.controller = state
+                    self.controller.register_button_callback(self._button_callback)
+                    # Start the actual listening task
+                    self._listen_task = self.loop.create_task(self.controller._listen_buttons())
+                    self.initialized = True
+                else:
+                    print(f"Failed to connect to controller {ip}")
+                    self.controller = None
+                    self.initialized = False
+        except Exception as e:
+            print(f"Error during controller async initialization: {e}")
+            self.controller = None
+            self.initialized = False
+        finally:
+            # Signal that initialization attempt is complete
+            self.init_event.set()
+
+    def _button_callback(self, buttons):
+        # This is called from the asyncio thread
+        with self._lock:
+            # Compare with previous state to find button down events
+            if buttons[0] and not self.last_button_states[0]: self.event_queue.append(Direction.LEFT)
+            if buttons[1] and not self.last_button_states[1]: self.event_queue.append(Direction.UP)
+            if buttons[2] and not self.last_button_states[2]: self.event_queue.append(Direction.RIGHT)
+            if buttons[3] and not self.last_button_states[3]: self.event_queue.append(Direction.DOWN)
+            # Store the new state for the next comparison
+            self.last_button_states = list(buttons) # Store a copy
+        # print(f"Buttons: {self.last_button_states}") # Debugging
+
+    def get_direction_key(self):
+        # This is called from the main game thread
+        if not self.controller or not self.initialized:
+            return None
+
+        with self._lock:
+            if self.event_queue: # Check if the queue has events
+                return self.event_queue.popleft() # Return the oldest event
+
+        return None # No events in the queue
+
+    def start_initialization(self):
+        """Starts the background thread and waits for initialization."""
+        self.thread = threading.Thread(target=self._run_asyncio_loop, daemon=True)
+        self.thread.start()
+        # Wait for the init event to be set by the asyncio thread
+        initialized = self.init_event.wait(timeout=7.0) # Wait up to 7 seconds
+        if not initialized:
+            print("Controller initialization timed out.")
+            # Attempt to stop the thread if it's stuck
+            self.stop()
+            return False
+        return self.initialized # Return the actual success/fail status
+
+    def _run_asyncio_loop(self):
+        # Set up the event loop for this thread
+        try:
+            self.loop = asyncio.get_event_loop()
+        except RuntimeError:
+            self.loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.loop)
+
+        try:
+            # Schedule the main async task for this loop
+            self._init_task = self.loop.create_task(self._async_initialize_and_listen())
+            self.loop.run_forever()
+        finally:
+            print("Asyncio loop stopping...")
+            # Cleanup tasks on loop stop
+            if self._listen_task and not self._listen_task.done():
+                self._listen_task.cancel()
+            if self._init_task and not self._init_task.done():
+                self._init_task.cancel() # Should be done, but cancel defensively
+
+            # Gather cancelled tasks to allow them to finish cancelling
+            async def gather_cancelled():
+                tasks = [t for t in asyncio.all_tasks(self.loop) if t.cancelled()] # or t.done() ?
+                if tasks:
+                    await asyncio.gather(*tasks, return_exceptions=True)
+            if self.loop.is_running():
+                self.loop.run_until_complete(gather_cancelled())
+                self.loop.run_until_complete(self.loop.shutdown_asyncgens())
+
+            self.loop.close()
+            print("Asyncio loop stopped.")
+
+    def stop(self):
+        print("Stopping controller input handler...")
+        # Ensure loop exists before checking if running
+        loop = getattr(self, 'loop', None)
+        if loop and loop.is_running():
+            # Disconnect needs to be async, schedule it
+            if self.controller and self.controller._connected:
+                # Use call_soon_threadsafe as we're stopping from another thread
+                disconnect_future = asyncio.run_coroutine_threadsafe(self.controller.disconnect(), loop)
+                try:
+                    disconnect_future.result(timeout=2) # Wait briefly for disconnect
+                    print("Controller disconnected.")
+                except Exception as e:
+                    print(f"Error during controller disconnect: {e}")
+
+            # Cancel running tasks first
+            if self._listen_task:
+                loop.call_soon_threadsafe(self._listen_task.cancel)
+            if self._init_task:
+                loop.call_soon_threadsafe(self._init_task.cancel)
+
+            # Stop the loop itself
+            loop.call_soon_threadsafe(loop.stop)
+
+        if hasattr(self, 'thread') and self.thread.is_alive():
+            self.thread.join(timeout=3.0) # Increased timeout slightly
+
 class SnakeScene(Scene):
-    def __init__(self, width=20, height=20, length=20, frameRate=3, input_handler=None):
+    def __init__(self, width=20, height=20, length=20, frameRate=3, input_handler_type='controller'):
         super().__init__()
         self.thickness = 2
         self.width = width // self.thickness
         self.height = height // self.thickness
         self.length = length // self.thickness
         self.frameRate = frameRate # Hz
-        self.input_handler = input_handler or PygameInputHandler()
-        
+
+        print(f"Initializing SnakeScene with input type: {input_handler_type}")
+        if input_handler_type == 'controller':
+            print("Attempting to initialize controller input...")
+            controller_handler = ControllerInputHandler()
+            if controller_handler.start_initialization():
+                self.input_handler = controller_handler
+                print("Controller input handler started.")
+            else:
+                print("Controller initialization failed, falling back to Pygame.")
+                self.input_handler = PygameInputHandler()
+        else:
+            self.input_handler = PygameInputHandler()
+
         self.reset_game()
 
         # Timer for controlling update frequency
@@ -224,4 +382,8 @@ class SnakeScene(Scene):
                     idx = (y+dy) * raster.width + (x+dx)
                     raster.data[idx] = white
                     
+    def cleanup(self): # Add cleanup method
+        print("Cleaning up SnakeScene...")
+        if isinstance(self.input_handler, ControllerInputHandler):
+            self.input_handler.stop()
                         

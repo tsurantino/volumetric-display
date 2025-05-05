@@ -13,22 +13,23 @@ PING_TIMEOUT = 1.0  # seconds
 
 
 class ControllerState:
-    def __init__(self, ip, dip, loop):
+    def __init__(self, ip, dip):
         self.ip = ip
         self.dip = dip
-        self.loop = loop
         self.button_callback = None
         self._listen_task = None
         self._socket = None
         self._connected = False
+        self._buffer = b""
 
     async def connect(self):
         if self._connected:
             return True
+        loop = asyncio.get_running_loop()
         try:
             self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self._socket.settimeout(CONNECTION_TIMEOUT)
-            self._socket.connect((self.ip, CONTROLLER_PORT))
+            await loop.sock_connect(self._socket, (self.ip, CONTROLLER_PORT))
             self._socket.setblocking(False)
             self._connected = True
             return True
@@ -72,14 +73,15 @@ class ControllerState:
     def register_button_callback(self, callback):
         self.button_callback = callback
         if not self._listen_task:
-            self._listen_task = self.loop.create_task(self._listen_buttons())
+            self._listen_task = asyncio.get_running_loop().create_task(self._listen_buttons())
 
     async def _send(self, msg):
         if not self._connected:
             if not await self.connect():
                 return
+        loop = asyncio.get_running_loop()
         try:
-            await self.loop.sock_sendall(self._socket, msg)
+            await loop.sock_sendall(self._socket, msg)
         except Exception as e:
             print(f"Error sending to {self.ip}: {e}")
             self.disconnect()
@@ -88,24 +90,46 @@ class ControllerState:
         while True:
             if not self._connected:
                 if not await self.connect():
-                    await asyncio.sleep(BUTTON_TIMEOUT)
+                    await asyncio.sleep(1.0)
                     continue
 
             try:
-                data = await self.loop.sock_recv(self._socket, 1024)
+                loop = asyncio.get_running_loop()
+                data = await loop.sock_recv(self._socket, 1024)
                 print(f"Received data: {data}")
                 if not data:  # Connection closed
                     self.disconnect()
                     continue
 
-                try:
-                    msg = json.loads(data.decode())
-                    if "buttons" in msg and self.button_callback:
-                        self.button_callback(msg["buttons"])
-                except Exception as e:
-                    print(f"Error processing button message: {e}")
-            except Exception:
-                await asyncio.sleep(BUTTON_TIMEOUT)
+                self._buffer += data
+                parts = self._buffer.split(b'\n')
+
+                self._buffer = parts[-1] if not self._buffer.endswith(b'\n') else b""
+
+                messages_to_process = parts[:-1] if not self._buffer else parts
+
+                for part in messages_to_process:
+                    if not part:
+                        continue
+                    part_str = part.strip().decode()
+                    if not part_str:
+                        continue
+                    try:
+                        msg = json.loads(part_str)
+                        if "buttons" in msg and self.button_callback:
+                            self.button_callback(msg["buttons"])
+                    except json.JSONDecodeError as e:
+                        print(f"Error decoding JSON: {e} on data: '{part_str}'")
+                    except Exception as e:
+                        print(f"Error processing button message: {e}")
+            except ConnectionResetError:
+                print(f"Connection reset by {self.ip}. Reconnecting...")
+                self.disconnect()
+                await asyncio.sleep(1.0)
+            except Exception as e:
+                print(f"Error reading from socket {self.ip}: {e}")
+                self.disconnect()
+                await asyncio.sleep(1.0)
 
 
 class ControlPort:
@@ -119,10 +143,11 @@ class ControlPort:
 
     async def ping_host(self, ip):
         """Ping a host and return True if it responds."""
+        loop = asyncio.get_running_loop()
         param = "-n" if platform.system().lower() == "windows" else "-c"
         command = ["ping", param, "1", "-W", str(int(PING_TIMEOUT * 1000)), ip]
         try:
-            result = await self.loop.run_in_executor(
+            result = await loop.run_in_executor(
                 None,
                 lambda: subprocess.run(
                     command, capture_output=True, text=True, timeout=PING_TIMEOUT
@@ -135,10 +160,11 @@ class ControlPort:
 
     async def check_port(self, ip):
         """Check if the port is open using a socket connection."""
+        loop = asyncio.get_running_loop()
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(1.0)  # Short timeout for port check
         try:
-            result = await self.loop.sock_connect(sock, (ip, self.port))
+            result = await loop.sock_connect(sock, (ip, self.port))
             print(f"Port {self.port} is open on {ip}")
             return True
         except Exception as e:
@@ -189,24 +215,25 @@ class ControlPort:
         for result in results:
             if result:
                 ip, dip = result
-                self.controllers[ip] = ControllerState(ip, dip, self.loop)
+                self.controllers[ip] = ControllerState(ip, dip)
         return self.controllers
 
     async def _query_controller(self, ip, timeout):
         print(f"\nAttempting to enumerate {ip}:{self.port}")
+        loop = asyncio.get_running_loop()
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(timeout)
         try:
             print(f"1. Connecting to {ip}:{self.port}")
-            await self.loop.sock_connect(sock, (ip, self.port))
+            await loop.sock_connect(sock, (ip, self.port))
             print("2. Connection successful, setting non-blocking mode")
             sock.setblocking(False)
 
             print("3. Sending enum command")
-            await self.loop.sock_sendall(sock, ENUM_COMMAND)
+            await loop.sock_sendall(sock, ENUM_COMMAND)
             print("4. Command sent, waiting for response")
 
-            data = await self.loop.sock_recv(sock, 1024)
+            data = await loop.sock_recv(sock, 1024)
             print(f"5. Received response: {data}")
 
             msg = json.loads(data.decode())

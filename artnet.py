@@ -4,6 +4,8 @@ import importlib.util
 import os.path
 import socket
 import struct
+import time
+import sys
 
 
 @dataclasses.dataclass
@@ -111,14 +113,27 @@ def load_scene(path: str) -> Scene:
     """
     # Get absolute path
     path = os.path.abspath(path)
+    scene_dir = os.path.dirname(path)
+
+    # Store original sys.path and add scene directory
+    original_sys_path = list(sys.path)
+    if scene_dir not in sys.path:
+        sys.path.insert(0, scene_dir)
 
     # Load module
     spec = importlib.util.spec_from_file_location("scene_module", path)
     if not spec or not spec.loader:
+        # Restore sys.path before raising error
+        sys.path = original_sys_path
         raise ImportError(f"Could not load scene from {path}")
 
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        # Ensure original sys.path is restored
+        sys.path = original_sys_path
 
     # Find Scene subclass
     scene_classes = [
