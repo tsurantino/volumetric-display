@@ -21,6 +21,7 @@ class ControllerState:
         self._socket = None
         self._connected = False
         self._buffer = b""
+        self._lcd_cache = {} # Cache for LCD content
 
     async def connect(self):
         if self._connected:
@@ -48,12 +49,18 @@ class ControllerState:
         self._connected = False
 
     async def set_lcd(self, x, y, text):
+        if self._lcd_cache.get((x, y)) == text:
+            return # Text is the same, no need to update
         msg = f"lcd:{x}:{y}:{text}\n".encode()
         await self._send(msg)
+        # Assuming _send is successful if no exception bubbles up
+        self._lcd_cache[(x, y)] = text
 
     async def clear_lcd(self):
         msg = f"lcd:clear\n".encode()
         await self._send(msg)
+        # Assuming _send is successful
+        self._lcd_cache = {} # Screen is cleared, so is the cache
 
     async def set_backlights(self, states):
         payload = ":".join(["1" if s else "0" for s in states])
