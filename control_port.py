@@ -21,6 +21,8 @@ class ControllerState:
         self._socket = None
         self._connected = False
         self._buffer = b""
+        self._front_buffer = {}  # Maps (x,y) to string
+        self._back_buffer = {}   # Maps (x,y) to string
         self._lcd_cache = {} # Cache for LCD content
 
     async def connect(self):
@@ -48,19 +50,49 @@ class ControllerState:
         self._socket = None
         self._connected = False
 
-    async def set_lcd(self, x, y, text):
-        if self._lcd_cache.get((x, y)) == text:
-            return # Text is the same, no need to update
-        msg = f"lcd:{x}:{y}:{text}\n".encode()
-        await self._send(msg)
-        # Assuming _send is successful if no exception bubbles up
-        self._lcd_cache[(x, y)] = text
+    def clear(self):
+        """Clear the back buffer."""
+        self._back_buffer.clear()
+
+    def write_lcd(self, x, y, text):
+        """Write text to the back buffer at position (x,y)."""
+        self._back_buffer[(x, y)] = text
+
+    async def commit(self):
+        """Compare back buffer to front buffer and send only the changes."""
+        if not self._connected:
+            if not await self.connect():
+                return
+
+        # If back buffer is empty, send clear command
+        if not self._back_buffer:
+            await self._send("lcd:clear\n".encode())
+            self._front_buffer.clear()
+            return
+
+        # Find and send changes
+        for (x, y), text in self._back_buffer.items():
+            if self._front_buffer.get((x, y)) != text:
+                msg = f"lcd:{x}:{y}:{text}\n".encode()
+                await self._send(msg)
+                self._front_buffer[(x, y)] = text
+
+        # Clear positions that were in front buffer but not in back buffer
+        for pos in list(self._front_buffer.keys()):
+            if pos not in self._back_buffer:
+                msg = f"lcd:{pos[0]}:{pos[1]}: \n".encode()  # Send space to clear
+                await self._send(msg)
+                del self._front_buffer[pos]
 
     async def clear_lcd(self):
-        msg = f"lcd:clear\n".encode()
-        await self._send(msg)
-        # Assuming _send is successful
-        self._lcd_cache = {} # Screen is cleared, so is the cache
+        """Clear the LCD display."""
+        self.clear()
+        await self.commit()
+
+    async def set_lcd(self, x, y, text):
+        """Write text to the LCD display at position (x,y) and commit immediately."""
+        self.write_lcd(x, y, text)
+        await self.commit()
 
     async def set_backlights(self, states):
         payload = ":".join(["1" if s else "0" for s in states])
@@ -109,10 +141,14 @@ class ControllerState:
                     continue
 
                 self._buffer += data
+                # Remove all \r characters and split on \n
+                self._buffer = self._buffer.replace(b'\r', b'')
                 parts = self._buffer.split(b'\n')
 
+                # Keep the last part if it's not a complete message
                 self._buffer = parts[-1] if not self._buffer.endswith(b'\n') else b""
 
+                # Process all complete messages
                 messages_to_process = parts[:-1] if not self._buffer else parts
 
                 for part in messages_to_process:
