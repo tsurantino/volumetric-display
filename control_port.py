@@ -13,7 +13,7 @@ PING_TIMEOUT = 1.0  # seconds
 
 
 class ControllerState:
-    def __init__(self, ip, dip):
+    def __init__(self, ip, dip, width=20, height=4):
         self.ip = ip
         self.dip = dip
         self.button_callback = None
@@ -21,8 +21,12 @@ class ControllerState:
         self._socket = None
         self._connected = False
         self._buffer = b""
-        self._front_buffer = {}  # Maps (x,y) to string
-        self._back_buffer = {}   # Maps (x,y) to string
+        # Store display dimensions
+        self._display_width = width
+        self._display_height = height
+        # Initialize front and back buffers as 2D arrays of characters
+        self._front_buffer = [[' ' for _ in range(width)] for _ in range(height)]
+        self._back_buffer = [[' ' for _ in range(width)] for _ in range(height)]
         self._lcd_cache = {} # Cache for LCD content
 
     async def connect(self):
@@ -51,12 +55,33 @@ class ControllerState:
         self._connected = False
 
     def clear(self):
-        """Clear the back buffer."""
-        self._back_buffer.clear()
+        """Clear the back buffer by filling it with spaces."""
+        for y in range(self._display_height):
+            for x in range(self._display_width):
+                self._back_buffer[y][x] = ' '
 
     def write_lcd(self, x, y, text):
         """Write text to the back buffer at position (x,y)."""
-        self._back_buffer[(x, y)] = text
+        if not (0 <= y < self._display_height and 0 <= x < self._display_width):
+            return
+        for i, char in enumerate(text):
+            if x + i < self._display_width:  # Ensure we don't write past the display width
+                self._back_buffer[y][x + i] = char
+
+    def _find_contiguous_changes(self, y):
+        """Find contiguous regions of changes in a line."""
+        changes = []
+        start = None
+        for x in range(self._display_width):
+            if self._front_buffer[y][x] != self._back_buffer[y][x]:
+                if start is None:
+                    start = x
+            elif start is not None:
+                changes.append((start, x))
+                start = None
+        if start is not None:
+            changes.append((start, self._display_width))
+        return changes
 
     async def commit(self):
         """Compare back buffer to front buffer and send only the changes."""
@@ -64,25 +89,24 @@ class ControllerState:
             if not await self.connect():
                 return
 
-        # If back buffer is empty, send clear command
-        if not self._back_buffer:
+        # If back buffer is empty (all spaces), send clear command
+        if all(all(c == ' ' for c in row) for row in self._back_buffer):
             await self._send("lcd:clear\n".encode())
-            self._front_buffer.clear()
+            self._front_buffer = [[' ' for _ in range(self._display_width)] for _ in range(self._display_height)]
             return
 
-        # Find and send changes
-        for (x, y), text in self._back_buffer.items():
-            if self._front_buffer.get((x, y)) != text:
-                msg = f"lcd:{x}:{y}:{text}\n".encode()
+        # Find and send changes line by line
+        for y in range(self._display_height):
+            changes = self._find_contiguous_changes(y)
+            for start, end in changes:
+                # Get the new text for this region
+                new_text = ''.join(self._back_buffer[y][start:end])
+                # Send the update command
+                msg = f"lcd:{start}:{y}:{new_text}\n".encode()
                 await self._send(msg)
-                self._front_buffer[(x, y)] = text
-
-        # Clear positions that were in front buffer but not in back buffer
-        for pos in list(self._front_buffer.keys()):
-            if pos not in self._back_buffer:
-                msg = f"lcd:{pos[0]}:{pos[1]}: \n".encode()  # Send space to clear
-                await self._send(msg)
-                del self._front_buffer[pos]
+                # Update the front buffer
+                for x in range(start, end):
+                    self._front_buffer[y][x] = self._back_buffer[y][x]
 
     async def clear_lcd(self):
         """Clear the LCD display."""

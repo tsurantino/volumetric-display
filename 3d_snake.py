@@ -37,6 +37,13 @@ class Direction(Enum):
     UP = 3
     DOWN = 4
 
+class Button(Enum):
+    UP = 0
+    LEFT = 1
+    DOWN = 2
+    RIGHT = 3
+    SELECT = 4
+
 class Difficulty(Enum):
     EASY = 1
     MEDIUM = 2
@@ -182,8 +189,17 @@ class ControllerInputHandler:
         controller_state, player_id = self.controllers[controller_id]
         config = PLAYER_CONFIG[player_id]
 
-        # Handle SELECT button (index 4) for menu selection
-        if buttons[4]:  # SELECT pressed
+        # Map button indices to their logical meaning
+        button_to_enum = {
+            0: Button.UP,
+            1: Button.LEFT,
+            2: Button.DOWN,
+            3: Button.RIGHT,
+            4: Button.SELECT
+        }
+
+        # Handle SELECT button for menu selection
+        if buttons[Button.SELECT.value]:  # SELECT pressed
             if not self.select_hold_data[controller_id]['is_counting_down']:
                 self.select_hold_data[controller_id] = {
                     'start_time': time.monotonic(),
@@ -209,10 +225,25 @@ class ControllerInputHandler:
                         self.voting_states[controller_id] = True
             self.select_hold_data[controller_id]['is_counting_down'] = False
 
+        # Handle directional buttons for snake control
+        # Map Button enum to Direction enum for game controls
+        button_to_direction = {
+            Button.UP: Direction.UP,
+            Button.LEFT: Direction.LEFT,
+            Button.DOWN: Direction.DOWN,
+            Button.RIGHT: Direction.RIGHT
+        }
+
+        # Check each directional button and queue the corresponding direction
+        for button in [Button.UP, Button.LEFT, Button.DOWN, Button.RIGHT]:
+            if buttons[button.value] and not self.last_button_states.get(controller_id, [False] * 5)[button.value]:
+                with self._lock:
+                    self.event_queue.append((player_id, button_to_direction[button]))
+
         # Handle UP/DOWN for menu navigation
         current_time = time.monotonic()
         if current_time - self.menu_selection_time > 0.2:  # Debounce menu selection
-            if buttons[1] and not self.last_button_states.get(controller_id, [False] * 5)[1]:  # UP
+            if buttons[Button.UP.value] and not self.last_button_states.get(controller_id, [False] * 5)[Button.UP.value]:
                 # Move selection up (0->1->2->0)
                 current = self.menu_selections.get(controller_id, 0)
                 self.menu_selections[controller_id] = (current - 1) % 3
@@ -221,7 +252,7 @@ class ControllerInputHandler:
                 if controller_id in self.voting_states and self.voting_states[controller_id]:
                     self.voting_states[controller_id] = False
                     self.menu_votes.pop(controller_id, None)
-            elif buttons[3] and not self.last_button_states.get(controller_id, [False] * 5)[3]:  # DOWN
+            elif buttons[Button.DOWN.value] and not self.last_button_states.get(controller_id, [False] * 5)[Button.DOWN.value]:
                 # Move selection down (0->2->1->0)
                 current = self.menu_selections.get(controller_id, 0)
                 self.menu_selections[controller_id] = (current + 1) % 3
@@ -273,6 +304,16 @@ class ControllerInputHandler:
         self.last_display_update = current_time
 
         async def update_single_controller(controller_state, player_id):
+            if countdown is not None:
+                # Show countdown display
+                controller_state.clear()
+                controller_state.write_lcd(0, 0, f"Starting in {countdown}...")
+                controller_state.write_lcd(0, 1, "GET READY!")
+                controller_state.write_lcd(0, 2, "")
+                controller_state.write_lcd(0, 3, "Hold SELECT to EXIT")
+                await controller_state.commit()
+                return
+
             if menu_active:
                 # Show difficulty selection menu
                 current_selection = self.menu_selections.get(controller_state.dip, 0)
@@ -296,41 +337,52 @@ class ControllerInputHandler:
                 # Build the display in the back buffer
                 controller_state.write_lcd(0, 0, "SELECT DIFFICULTY")
                 controller_state.write_lcd(0, 1, "EASY")
-                controller_state.write_lcd(6, 1, easy_marker)
+                controller_state.write_lcd(7, 1, easy_marker)
                 if easy_votes > 0:
                     controller_state.write_lcd(17, 1, str(easy_votes))
                 
                 controller_state.write_lcd(0, 2, "MEDIUM")
-                controller_state.write_lcd(6, 2, medium_marker)
+                controller_state.write_lcd(7, 2, medium_marker)
                 if medium_votes > 0:
                     controller_state.write_lcd(17, 2, str(medium_votes))
                 
                 controller_state.write_lcd(0, 3, "HARD")
-                controller_state.write_lcd(6, 3, hard_marker)
+                controller_state.write_lcd(7, 3, hard_marker)
                 if hard_votes > 0:
                     controller_state.write_lcd(17, 3, str(hard_votes))
                 
                 status_text = f"Waiting for {total_players - waiting_count} more" if has_voted else "Press SELECT to vote"
                 controller_state.write_lcd(0, 4, status_text)
                 
-                if countdown is not None:
-                    # Shift everything down one line and add countdown at top
-                    controller_state.clear()
-                    controller_state.write_lcd(0, 0, f"Starting in {countdown}...")
-                    controller_state.write_lcd(0, 1, "SELECT DIFFICULTY")
-                    controller_state.write_lcd(0, 2, "EASY")
-                    controller_state.write_lcd(6, 2, easy_marker)
-                    if easy_votes > 0:
-                        controller_state.write_lcd(17, 2, str(easy_votes))
-                    controller_state.write_lcd(0, 3, "MEDIUM")
-                    controller_state.write_lcd(6, 3, medium_marker)
-                    if medium_votes > 0:
-                        controller_state.write_lcd(17, 3, str(medium_votes))
-                    controller_state.write_lcd(0, 4, "HARD")
-                    controller_state.write_lcd(6, 4, hard_marker)
-                    if hard_votes > 0:
-                        controller_state.write_lcd(17, 4, str(hard_votes))
-                
+                # Commit the changes to the display
+                await controller_state.commit()
+            else:
+                # Show game state (team assignment and scores)
+                config = PLAYER_CONFIG[player_id]
+                team = config['team']
+                snake_id = team.name.lower()
+                snake = snakes_data[snake_id]
+                other_snake_id = 'orange' if snake_id == 'blue' else 'blue'
+                other_snake = snakes_data[other_snake_id]
+
+                # Clear the back buffer
+                controller_state.clear()
+
+                # Show team assignment
+                team_text = f"TEAM: {team.name}"
+                controller_state.write_lcd(0, 0, team_text)
+
+                # Show scores
+                score_text = f"SCORE: {snake.score}"
+                other_score_text = f"OPPONENT: {other_snake.score}"
+                controller_state.write_lcd(0, 1, "SCORE:")
+                controller_state.write_lcd(16, 1, str(snake.score))
+                controller_state.write_lcd(0, 2, "OPPONENT:")
+                controller_state.write_lcd(16, 2, str(other_snake.score))
+
+                # Show controls reminder
+                controller_state.write_lcd(0, 3, "Hold SELECT to EXIT")
+
                 # Commit the changes to the display
                 await controller_state.commit()
 
@@ -412,6 +464,24 @@ class ControllerInputHandler:
         if hasattr(self, 'thread') and self.thread.is_alive():
             self.thread.join(timeout=3.0)
 
+class RainbowExplosion:
+    def __init__(self, position, time):
+        self.position = position
+        self.birth_time = time
+        self.lifetime = 1.0  # Explosion lasts 1 second
+        self.radius = 0
+        self.max_radius = 5
+
+    def is_expired(self, current_time):
+        return current_time - self.birth_time > self.lifetime
+
+    def get_current_radius(self, current_time):
+        age = current_time - self.birth_time
+        if age < self.lifetime:
+            # Expand from 0 to max_radius over lifetime
+            return self.max_radius * (age / self.lifetime)
+        return 0
+
 class SnakeData:
     def __init__(self, id, color, start_pos, start_dir):
         self.id = id
@@ -430,6 +500,7 @@ class SnakeScene(Scene):
         self.length = length // self.thickness
         self.frameRate = frameRate
         self.base_frame_rate = frameRate  # Store original frame rate
+        self.explosions = []  # List to track active explosions
 
         print(f"Initializing SnakeScene with input type: {input_handler_type}")
         if input_handler_type == 'controller':
@@ -446,6 +517,7 @@ class SnakeScene(Scene):
 
         self.reset_game()
         self.last_update_time = 0
+        self.last_countdown_time = 0  # Add this line to track countdown timing separately
         self.game_over_active = False
         self.game_over_flash_state = {'count': 0, 'timer': 0, 'interval': 0.2, 'border_on': False}
         self.menu_active = True
@@ -508,7 +580,7 @@ class SnakeScene(Scene):
         # Check for collisions
         if (not self.valid(*new_head) or  # Wall collision (only in HARD mode)
             new_head in snake.body or      # Self collision
-            new_head in other_snake.body): # Other snake collision
+            new_head in other_snake.body):
             snake.score -= 1
             snake.length -= 1
             if snake.length <= 0:
@@ -544,6 +616,9 @@ class SnakeScene(Scene):
         # Check for apple consumption
         if new_head == self.apple:
             snake.length += 1
+            snake.score += 1  # Increment score when eating an apple
+            # Create explosion effect at apple position
+            self.explosions.append(RainbowExplosion(self.apple, self.last_update_time))
             self.place_new_apple()
 
         return True
@@ -639,8 +714,10 @@ class SnakeScene(Scene):
                 if self.menu_active:
                     self.select_difficulty()
                 elif self.countdown_active:
-                    if time - self.last_update_time >= 1.0:  # Count down every second
+                    # Decrement countdown every second
+                    if time - self.last_countdown_time >= 1.0:  # Use separate timer for countdown
                         self.countdown_value -= 1
+                        self.last_countdown_time = time  # Update the countdown timer
                         if self.countdown_value <= 0:
                             self.countdown_active = False
                             self.game_started = True
@@ -685,6 +762,36 @@ class SnakeScene(Scene):
                 for z in range(raster.length):
                     idx = y * raster.width + x + z * raster.width * raster.height
                     raster.data[idx] = black
+
+        # Draw explosions
+        current_time = time  # Use the passed time parameter
+        active_explosions = []
+        for explosion in self.explosions:
+            if not explosion.is_expired(current_time):
+                active_explosions.append(explosion)
+                radius = explosion.get_current_radius(current_time)
+                x, y, z = explosion.position
+                x *= self.thickness
+                y *= self.thickness
+                z *= self.thickness
+                
+                # Draw rainbow shell
+                for dx in range(-int(radius), int(radius) + 1):
+                    for dy in range(-int(radius), int(radius) + 1):
+                        for dz in range(-int(radius), int(radius) + 1):
+                            # Only draw points on the shell
+                            if abs(math.sqrt(dx*dx + dy*dy + dz*dz) - radius) < 0.5:
+                                nx = x + dx
+                                ny = y + dy
+                                nz = z + dz
+                                if (0 <= nx < raster.width and 
+                                    0 <= ny < raster.height and 
+                                    0 <= nz < raster.length):
+                                    idx = ny * raster.width + nx + nz * raster.width * raster.height
+                                    # Create rainbow color based on position
+                                    hue = ((dx + dy + dz) * 4 + current_time * 50) % 256
+                                    raster.data[idx] = RGB.from_hsv(HSV(hue, 255, 255))
+        self.explosions = active_explosions
 
         # Draw game over border if active
         if self.game_over_active and self.game_over_flash_state['border_on']:
