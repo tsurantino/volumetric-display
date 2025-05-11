@@ -4,6 +4,7 @@ import json
 import base64
 import subprocess
 import platform
+import time
 
 CONTROLLER_PORT = 51333
 ENUM_COMMAND = b"enum\n"
@@ -18,9 +19,11 @@ class ControllerState:
         self.dip = dip
         self.button_callback = None
         self._listen_task = None
+        self._heartbeat_task = None
         self._socket = None
         self._connected = False
         self._buffer = b""
+        self._last_message_time = 0  # Track last message time
         # Store display dimensions
         self._display_width = width
         self._display_height = height
@@ -39,6 +42,18 @@ class ControllerState:
             await loop.sock_connect(self._socket, (self.ip, CONTROLLER_PORT))
             self._socket.setblocking(False)
             self._connected = True
+            self._last_message_time = time.monotonic()
+            # Start heartbeat task
+            self._heartbeat_task = loop.create_task(self._send_heartbeats())
+            
+            # Restore LCD state after reconnection
+            await self._send("lcd:clear\n".encode())
+            # Send the entire front buffer
+            for y in range(self._display_height):
+                line = ''.join(self._front_buffer[y])
+                if line.strip():  # Only send non-empty lines
+                    await self._send(f"lcd:0:{y}:{line}\n".encode())
+            
             return True
         except Exception as e:
             print(f"Failed to connect to {self.ip}: {e}")
@@ -46,6 +61,9 @@ class ControllerState:
             return False
 
     def disconnect(self):
+        if self._heartbeat_task:
+            self._heartbeat_task.cancel()
+            self._heartbeat_task = None
         if self._socket:
             try:
                 self._socket.close()
@@ -149,6 +167,20 @@ class ControllerState:
             print(f"Error sending to {self.ip}: {e}")
             self.disconnect()
 
+    async def _send_heartbeats(self):
+        """Send noop messages every second to keep connection alive."""
+        while True:
+            try:
+                if self._connected:
+                    await self._send(b"noop\n")
+                await asyncio.sleep(1.0)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                print(f"Error sending heartbeat to {self.ip}: {e}")
+                self.disconnect()
+                break
+
     async def _listen_buttons(self):
         while True:
             if not self._connected:
@@ -159,11 +191,11 @@ class ControllerState:
             try:
                 loop = asyncio.get_running_loop()
                 data = await loop.sock_recv(self._socket, 1024)
-                print(f"Received data: {data}")
                 if not data:  # Connection closed
                     self.disconnect()
                     continue
 
+                self._last_message_time = time.monotonic()  # Update last message time
                 self._buffer += data
                 # Remove all \r characters and split on \n
                 self._buffer = self._buffer.replace(b'\r', b'')
@@ -183,12 +215,22 @@ class ControllerState:
                         continue
                     try:
                         msg = json.loads(part_str)
-                        if "buttons" in msg and self.button_callback:
+                        if msg.get("type") == "heartbeat":
+                            # Respond to heartbeat with noop
+                            await self._send(b"noop\n")
+                        elif "buttons" in msg and self.button_callback:
                             self.button_callback(msg["buttons"])
                     except json.JSONDecodeError as e:
                         print(f"Error decoding JSON: {e} on data: '{part_str}'")
                     except Exception as e:
-                        print(f"Error processing button message: {e}")
+                        print(f"Error processing message: {e}")
+
+                # Check for timeout (5 seconds without messages)
+                if time.monotonic() - self._last_message_time > 5.0:
+                    print(f"No messages from {self.ip} for 5 seconds, disconnecting...")
+                    self.disconnect()
+                    continue
+
             except ConnectionResetError:
                 print(f"Connection reset by {self.ip}. Reconnecting...")
                 self.disconnect()
@@ -300,16 +342,51 @@ class ControlPort:
             await loop.sock_sendall(sock, ENUM_COMMAND)
             print("4. Command sent, waiting for response")
 
-            data = await loop.sock_recv(sock, 1024)
-            print(f"5. Received response: {data}")
+            # Keep reading until we get a valid response or timeout
+            buffer = b""
+            start_time = time.monotonic()
+            while time.monotonic() - start_time < timeout:
+                try:
+                    data = await loop.sock_recv(sock, 1024)
+                    if not data:
+                        break
+                    
+                    buffer += data
+                    # Remove all \r characters and split on \n
+                    buffer = buffer.replace(b'\r', b'')
+                    parts = buffer.split(b'\n')
+                    
+                    # Keep the last part if it's not a complete message
+                    buffer = parts[-1] if not buffer.endswith(b'\n') else b""
+                    
+                    # Process all complete messages
+                    messages_to_process = parts[:-1] if not buffer else parts
+                    
+                    for part in messages_to_process:
+                        if not part:
+                            continue
+                        part_str = part.strip().decode()
+                        if not part_str:
+                            continue
+                        try:
+                            msg = json.loads(part_str)
+                            if msg.get("type") == "heartbeat":
+                                # Respond to heartbeat with noop
+                                await loop.sock_sendall(sock, b"noop\n")
+                            elif msg.get("type") == "controller" and "dip" in msg:
+                                print(f"6. Successfully enumerated controller with DIP={msg['dip']}")
+                                return (ip, msg["dip"])
+                        except json.JSONDecodeError as e:
+                            print(f"Error decoding JSON: {e} on data: '{part_str}'")
+                            continue
+                except asyncio.TimeoutError:
+                    break
+                except Exception as e:
+                    print(f"Error reading from socket: {e}")
+                    break
 
-            msg = json.loads(data.decode())
-            if msg.get("type") == "controller" and "dip" in msg:
-                print(f"6. Successfully enumerated controller with DIP={msg['dip']}")
-                return (ip, msg["dip"])
-            else:
-                print(f"6. Invalid response format: {msg}")
-                return None
+            print("6. No valid controller response received")
+            return None
         except socket.timeout:
             print(f"Timeout while communicating with {ip}")
             return None
