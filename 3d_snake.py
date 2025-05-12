@@ -139,11 +139,6 @@ class DisplayManager:
                 team = config['team']
                 difficulty_text = ">>> EASY <<<" if game_state.difficulty == Difficulty.EASY else ">>> MEDIUM <<<" if game_state.difficulty == Difficulty.MEDIUM else ">>> HARD <<<"
                 
-                #self._log_lcd_command(controller_state.dip, 0, f"TEAM {team.name}")
-                #self._log_lcd_command(controller_state.dip, 1, difficulty_text)
-                #self._log_lcd_command(controller_state.dip, 2, f"GET READY! {game_state.countdown_value}...")
-                #self._log_lcd_command(controller_state.dip, 3, "Hold SELECT to EXIT")
-                
                 controller_state.write_lcd(0, 0, f"TEAM {team.name}")
                 controller_state.write_lcd(0, 1, difficulty_text)
                 controller_state.write_lcd(0, 2, f"GET READY! {game_state.countdown_value}...")
@@ -172,14 +167,6 @@ class DisplayManager:
                 # Clear the back buffer
                 controller_state.clear()
                 
-                # Build the display in the back buffer
-                #self._log_lcd_command(controller_state.dip, 0, "SELECT DIFFICULTY")
-                #self._log_lcd_command(controller_state.dip, 1, f"EASY {easy_marker} {easy_votes if easy_votes > 0 else ''}")
-                #self._log_lcd_command(controller_state.dip, 2, f"MEDIUM {medium_marker} {medium_votes if medium_votes > 0 else ''}")
-                #self._log_lcd_command(controller_state.dip, 3, f"HARD {hard_marker} {hard_votes if hard_votes > 0 else ''}")
-                status_text = f"Waiting for {total_players - waiting_count} more" if has_voted else "Press SELECT to vote"
-                #self._log_lcd_command(controller_state.dip, 4, status_text)
-                
                 controller_state.write_lcd(0, 0, "SELECT DIFFICULTY")
                 controller_state.write_lcd(0, 1, "EASY")
                 controller_state.write_lcd(7, 1, easy_marker)
@@ -196,6 +183,7 @@ class DisplayManager:
                 if hard_votes > 0:
                     controller_state.write_lcd(17, 3, str(hard_votes))
                 
+                status_text = f"Waiting for {total_players - waiting_count} more" if has_voted else "Press SELECT to vote"
                 controller_state.write_lcd(0, 4, status_text)
                 
                 # Commit the changes to the display
@@ -212,19 +200,23 @@ class DisplayManager:
                 # Clear the back buffer
                 controller_state.clear()
 
-                # Show team assignment
-                team_text = f"TEAM: {team.name}"
-                #self._log_lcd_command(controller_state.dip, 0, team_text)
-                #self._log_lcd_command(controller_state.dip, 1, f"SCORE: {snake.score}")
-                #self._log_lcd_command(controller_state.dip, 2, f"OPPONENT: {other_snake.score}")
-                #self._log_lcd_command(controller_state.dip, 3, "Hold SELECT to EXIT")
-
-                controller_state.write_lcd(0, 0, team_text)
+                # Show team assignment and scores
+                controller_state.write_lcd(0, 0, f"TEAM: {team.name}")
                 controller_state.write_lcd(0, 1, "SCORE:")
                 controller_state.write_lcd(16, 1, str(snake.score))
                 controller_state.write_lcd(0, 2, "OPPONENT:")
                 controller_state.write_lcd(16, 2, str(other_snake.score))
-                controller_state.write_lcd(0, 3, "Hold SELECT to EXIT")
+
+                # Show exit countdown if SELECT is being held
+                hold_data = game_state.input_handler.select_hold_data.get(controller_state.dip, {'is_counting_down': False, 'start_time': 0})
+                if hold_data['is_counting_down']:
+                    remaining = 5 - (current_time - hold_data['start_time'])
+                    if remaining > 0:
+                        controller_state.write_lcd(0, 3, f"EXIT: {remaining:.1f}s")
+                    else:
+                        controller_state.write_lcd(0, 3, "EXITING...")
+                else:
+                    controller_state.write_lcd(0, 3, "Hold SELECT to EXIT")
 
                 # Commit the changes to the display
                 await controller_state.commit()
@@ -501,6 +493,11 @@ class SnakeScene(Scene):
         self.base_frame_rate = frameRate  # Store original frame rate
         self.explosions = []  # List to track active explosions
 
+        # Initialize menu-related attributes
+        self.menu_selections = {}  # Maps controller_id to their current selection (0=EASY, 1=MEDIUM, 2=HARD)
+        self.menu_votes = {}  # Maps controller_id to their difficulty vote
+        self.voting_states = {}  # Maps controller_id to whether they have voted
+
         print(f"Initializing SnakeScene with input type: {input_handler_type}")
         if input_handler_type == 'controller':
             print("Attempting to initialize controller input...")
@@ -524,10 +521,6 @@ class SnakeScene(Scene):
         self.countdown_active = False
         self.countdown_value = None
         self.difficulty = None
-        # Menu state
-        self.menu_selections = {}  # Maps controller_id to their current selection (0=EASY, 1=MEDIUM, 2=HARD)
-        self.menu_votes = {}  # Maps controller_id to their difficulty vote
-        self.voting_states = {}  # Maps controller_id to whether they have voted
 
     def valid(self, x, y, z):
         if self.difficulty in [Difficulty.EASY, Difficulty.MEDIUM]:
@@ -671,6 +664,11 @@ class SnakeScene(Scene):
         self.countdown_value = None
         self.difficulty = None
         self.frameRate = self.base_frame_rate
+
+        # Clear menu and voting states
+        self.menu_selections.clear()
+        self.menu_votes.clear()
+        self.voting_states.clear()
 
     def select_difficulty(self):
         """Handle difficulty selection and voting."""
