@@ -204,14 +204,18 @@ class ArtNetController:
                  raster,
                  channels_per_universe=510,
                  universes_per_layer=6,
-                 channel_span=1):
+                 channel_span=1,
+                 z_indices=None):
         """
         Send the ArtNet DMX packet via UDP.
         """
         # Send DMX Data Packet
         data = bytearray()
-        for z in range(0, raster.length, channel_span):
-            universe = (z //
+        if z_indices is None:
+            z_indices = range(0, raster.length, channel_span)
+
+        for out_z, z in enumerate(z_indices):
+            universe = (out_z //
                         channel_span) * universes_per_layer + base_universe
             layer = raster.data[z * raster.width * raster.height:(z + 1) *
                                 raster.width * raster.height]

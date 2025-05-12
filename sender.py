@@ -115,7 +115,10 @@ def main():
             scene.render(raster, current_time)
 
             # Send the updated raster
-            controller.send_dmx(UNIVERSE, raster, channel_span=args.layer_span)
+            for ip in controllers:
+                controller = controllers[ip]
+                mapping = display_config.z_mapping[ip]
+                controller.send_dmx(UNIVERSE, raster, z_indices=mapping['z_indices'])
             time.sleep(0.01)  # Send updates at 100Hz
 
     except KeyboardInterrupt:
