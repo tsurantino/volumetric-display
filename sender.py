@@ -91,10 +91,12 @@ def main():
 
     # Create controllers for each IP
     controllers = {}
+    controller_mappings = []
     for mapping in display_config.z_mapping:
         ip = mapping['ip']
         if ip not in controllers:
             controllers[ip] = ArtNetController(ip, ARTNET_PORT)
+        controller_mappings.append((controllers[ip], mapping))
 
     # Load scene
     try:
@@ -115,9 +117,7 @@ def main():
             scene.render(raster, current_time)
 
             # Send the updated raster
-            for ip in controllers:
-                controller = controllers[ip]
-                mapping = display_config.z_mapping[ip]
+            for controller, mapping in controller_mappings:
                 controller.send_dmx(UNIVERSE, raster, z_indices=mapping['z_indices'])
             time.sleep(0.01)  # Send updates at 100Hz
 
