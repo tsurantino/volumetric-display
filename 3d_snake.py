@@ -188,6 +188,40 @@ class DisplayManager:
                 
                 # Commit the changes to the display
                 await controller_state.commit()
+            elif game_state.game_over_active:
+                # Show game over screen
+                config = PLAYER_CONFIG[player_id]
+                team = config['team']
+                snake_id = team.name.lower()
+                snake = game_state.snakes[snake_id]
+                other_snake_id = 'orange' if snake_id == 'blue' else 'blue'
+                other_snake = game_state.snakes[other_snake_id]
+
+                # Determine winner
+                if snake.score > other_snake.score:
+                    result = "WIN"
+                elif snake.score < other_snake.score:
+                    result = "LOSE"
+                else:
+                    result = "DRAW"
+
+                controller_state.clear()
+                controller_state.write_lcd(0, 0, f"GAME OVER! YOU {result}")
+                controller_state.write_lcd(0, 1, f"TEAM {team.name}: {snake.score}")
+                controller_state.write_lcd(0, 2, f"OPPONENT: {other_snake.score}")
+
+                # Show exit countdown if SELECT is being held
+                hold_data = game_state.input_handler.select_hold_data.get(controller_state.dip, {'is_counting_down': False, 'start_time': 0})
+                if hold_data['is_counting_down']:
+                    remaining = 5 - (current_time - hold_data['start_time'])
+                    if remaining > 0:
+                        controller_state.write_lcd(0, 3, f"EXIT: {remaining:.1f}s")
+                    else:
+                        controller_state.write_lcd(0, 3, "EXITING...")
+                else:
+                    controller_state.write_lcd(0, 3, "Hold SELECT to EXIT")
+
+                await controller_state.commit()
             else:
                 # Show game state (team assignment and scores)
                 config = PLAYER_CONFIG[player_id]
@@ -751,6 +785,17 @@ class SnakeScene(Scene):
                 self.menu_votes.pop(controller_id, None)
 
     def render(self, raster, current_time):
+        # Update controller displays independently of game state
+        if isinstance(self.input_handler, ControllerInputHandler):
+            # Update controller displays
+            asyncio.run_coroutine_threadsafe(
+                self.display_manager.update_displays(
+                    self.input_handler.controllers,
+                    self
+                ),
+                self.input_handler.loop
+            )
+
         # Update game state
         if current_time - self.last_update_time >= 1.0/self.frameRate:
             self.last_update_time = current_time
@@ -776,10 +821,8 @@ class SnakeScene(Scene):
                 input_event = self.input_handler.get_direction_key()
                 if input_event:
                     player_id, action = input_event
-                    if self.game_started:
+                    if self.game_started and not self.game_over_active:
                         self.process_player_input(player_id, action)
-                        if self.game_over_active:
-                            self.reset_game()
                     elif self.menu_active:
                         self.process_menu_input(player_id, action)
 
@@ -789,19 +832,10 @@ class SnakeScene(Scene):
                     self.update_snake('blue')
                     self.update_snake('orange')
 
-                    # Check for restart signal
-                    if self.input_handler.check_for_restart_signal():
-                        self.reset_game()
-                        self.input_handler.clear_all_select_holds()
-
-                # Update controller displays
-                asyncio.run_coroutine_threadsafe(
-                    self.display_manager.update_displays(
-                        self.input_handler.controllers,
-                        self
-                    ),
-                    self.input_handler.loop
-                )
+                # Check for restart signal
+                if self.input_handler.check_for_restart_signal():
+                    self.reset_game()
+                    self.input_handler.clear_all_select_holds()
 
         # Clear the raster
         for y in range(raster.height):
