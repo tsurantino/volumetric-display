@@ -168,34 +168,32 @@ def load_scene(path: str, config=None) -> Scene:
     if scene_dir not in sys.path:
         sys.path.insert(0, scene_dir)
 
-    # Load module
-    spec = importlib.util.spec_from_file_location("scene_module", path)
-    if not spec or not spec.loader:
-        # Restore sys.path before raising error
-        sys.path = original_sys_path
-        raise ImportError(f"Could not load scene from {path}")
-
-    module = importlib.util.module_from_spec(spec)
-
     try:
+        # Load module
+        spec = importlib.util.spec_from_file_location("scene_module", path)
+        if not spec or not spec.loader:
+            raise ImportError(f"Could not load scene from {path}")
+
+        module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
+
+        # Find Scene subclass
+        scene_classes = [
+            cls for cls in module.__dict__.values()
+            if isinstance(cls, type) and issubclass(cls, Scene) and cls != Scene
+        ]
+
+        if not scene_classes:
+            raise ValueError(f"No Scene subclass found in {path}")
+        if len(scene_classes) > 1:
+            raise ValueError(f"Multiple Scene subclasses found in {path}")
+
+        # Create and return instance
+        return scene_classes[0](config=config)
+
     finally:
-        # Ensure original sys.path is restored
+        # Restore original sys.path
         sys.path = original_sys_path
-
-    # Find Scene subclass
-    scene_classes = [
-        cls for cls in module.__dict__.values()
-        if isinstance(cls, type) and issubclass(cls, Scene) and cls != Scene
-    ]
-
-    if not scene_classes:
-        raise ValueError(f"No Scene subclass found in {path}")
-    if len(scene_classes) > 1:
-        raise ValueError(f"Multiple Scene subclasses found in {path}")
-
-    # Create and return instance
-    return scene_classes[0](config=config)
 
 
 class ArtNetController:
