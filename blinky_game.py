@@ -4,7 +4,7 @@ import random
 import time
 
 class BlinkyGame(BaseGame):
-    def __init__(self, width=20, height=20, length=20, frameRate=3, input_handler_type='controller', config=None):
+    def __init__(self, width=20, height=20, length=20, frameRate=30, input_handler_type='controller', config=None):
         super().__init__(width, height, length, frameRate, input_handler_type, config)
         self.cube = None
         self.cube_color = None

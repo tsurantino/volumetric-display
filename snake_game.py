@@ -4,7 +4,7 @@ import random
 import time
 
 class SnakeGame(BaseGame):
-    def __init__(self, width=20, height=20, length=20, frameRate=3, input_handler_type='controller', config=None):
+    def __init__(self, width=20, height=20, length=20, frameRate=30, input_handler_type='controller', config=None):
         super().__init__(width, height, length, frameRate, input_handler_type, config)
         self.snakes = {}  # Maps player_id to snake body (deque of positions)
         self.food = None
@@ -13,6 +13,8 @@ class SnakeGame(BaseGame):
             TeamID.BLUE: RGB(0, 0, 255),    # Blue snake
             TeamID.ORANGE: RGB(255, 165, 0)  # Orange snake
         }
+        self.last_step_time = 0  # Track last game step update
+        self.step_rate = 3  # Default to 3 steps per second (MEDIUM/HARD)
         self.reset_game()
 
     def reset_game(self):
@@ -21,6 +23,8 @@ class SnakeGame(BaseGame):
         self.food = None
         self.game_over_active = False
         self.game_over_flash_state = {'count': 0, 'timer': 0, 'interval': 0.2, 'border_on': False}
+        self.last_step_time = 0
+        self.step_rate = 3  # Reset to default step rate
 
         # Initialize snakes for each player
         for player_id in PlayerID:
@@ -156,11 +160,27 @@ class SnakeGame(BaseGame):
         else:
             snake.pop()
 
+    def set_difficulty(self, difficulty):
+        """Set the game difficulty and adjust step rate."""
+        if difficulty == Difficulty.EASY:
+            self.step_rate = 1  # 1 step per second
+        else:  # MEDIUM or HARD
+            self.step_rate = 3  # 3 steps per second
+
     def update_game_state(self):
         """Update the game state."""
+        current_time = time.monotonic()
+
+        # Only update snake positions at the step rate
+        if current_time - self.last_step_time >= 1.0/self.step_rate:
+            self.last_step_time = current_time
+            if not self.game_over_active:
+                # Update both snakes
+                self.update_snake('blue')
+                self.update_snake('orange')
+
+        # Update game over flash state (this can run at frame rate)
         if self.game_over_active:
-            # Update game over flash state
-            current_time = time.monotonic()
             if current_time - self.game_over_flash_state['timer'] >= self.game_over_flash_state['interval']:
                 self.game_over_flash_state['timer'] = current_time
                 self.game_over_flash_state['border_on'] = not self.game_over_flash_state['border_on']

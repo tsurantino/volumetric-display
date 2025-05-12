@@ -9,13 +9,14 @@ import asyncio
 from base_game import BaseGame, PlayerID, TeamID, Difficulty
 
 class GameScene(Scene):
-    def __init__(self, width=20, height=20, length=20, frameRate=3, input_handler_type='controller', config=None):
+    def __init__(self, width=20, height=20, length=20, frameRate=30, input_handler_type='controller', config=None):
         super().__init__()
         self.width = width
         self.height = height
         self.length = length
         self.frameRate = frameRate
         self.base_frame_rate = frameRate  # Store original frame rate
+        self.menu_frame_rate = 30  # Same as base frame rate now
         self.config = config
         self.game_started = False  # Initialize game_started attribute
 
@@ -143,8 +144,11 @@ class GameScene(Scene):
                 self.input_handler.loop
             )
 
+        # Use higher frame rate for menu and countdown
+        current_frame_rate = self.menu_frame_rate if (self.menu_active or self.countdown_active) else self.frameRate
+
         # Update game state
-        if current_time - self.last_update_time >= 1.0/self.frameRate:
+        if current_time - self.last_update_time >= 1.0/current_frame_rate:
             self.last_update_time = current_time
 
             if isinstance(self.input_handler, ControllerInputHandler):
@@ -225,6 +229,10 @@ class GameScene(Scene):
             input_handler_type='controller',
             config=self.config
         )
+
+        # Set difficulty for snake game
+        if hasattr(self.current_game, 'set_difficulty') and self.difficulty is not None:
+            self.current_game.set_difficulty(self.difficulty)
 
         # Start countdown
         self.menu_active = False
