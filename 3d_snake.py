@@ -52,8 +52,8 @@ class Difficulty(Enum):
 class PlayerID(Enum):
     BLUE_P1 = 1  # Controls from -X view
     BLUE_P2 = 2  # Controls from -Y view
-    ORANGE_P3 = 3  # Controls from +X view
-    ORANGE_P4 = 4  # Controls from +Y view
+    ORANGE_P1 = 3  # Controls from +X view
+    ORANGE_P2 = 4  # Controls from +Y view
 
 class TeamID(Enum):
     BLUE = 1
@@ -77,7 +77,7 @@ PLAYER_CONFIG = {
         'up_dir': (0, 0, 1),    # +Z
         'down_dir': (0, 0, -1), # -Z
     },
-    PlayerID.ORANGE_P3: {
+    PlayerID.ORANGE_P1: {
         'team': TeamID.ORANGE,
         'view': (1, 0, 0),   # +X view
         'left_dir': (0, 1, 0),  # +Y
@@ -85,7 +85,7 @@ PLAYER_CONFIG = {
         'up_dir': (0, 0, 1),    # +Z
         'down_dir': (0, 0, -1), # -Z
     },
-    PlayerID.ORANGE_P4: {
+    PlayerID.ORANGE_P2: {
         'team': TeamID.ORANGE,
         'view': (0, 1, 0),   # +Y view
         'left_dir': (-1, 0, 0), # -X
@@ -264,7 +264,7 @@ class DisplayManager:
             await asyncio.gather(*update_tasks)
 
 class ControllerInputHandler:
-    def __init__(self):
+    def __init__(self, controller_mapping=None):
         self.cp = control_port.ControlPort()
         self.controllers = {}  # Maps controller_id to (controller_state, player_id)
         self.active_controllers = []  # List of active controller states
@@ -280,6 +280,7 @@ class ControllerInputHandler:
         self.menu_selection_time = 0  # Time of last menu selection change
         self.menu_votes = {}  # Maps controller_id to their difficulty vote
         self.voting_states = {}  # Maps controller_id to whether they have voted
+        self.controller_mapping = controller_mapping or {}
 
     async def _async_initialize_and_listen(self):
         """Runs in the asyncio thread to initialize and start listening."""
@@ -297,10 +298,10 @@ class ControllerInputHandler:
                 key=lambda x: x[1].dip
             )
 
-            # Assign roles to first 4 controllers
-            for i, (ip, state) in enumerate(sorted_controllers[:4]):
-                if i < len(PlayerID):
-                    player_id = list(PlayerID)[i]
+            # Assign roles to controllers based on mapping
+            for ip, state in sorted_controllers:
+                if state.dip in self.controller_mapping:
+                    player_id = self.controller_mapping[state.dip]
                     if await state.connect():
                         print(f"Connected to controller {ip} (DIP: {state.dip}) as {player_id.name}")
                         # Clear the LCD on first connect
@@ -317,7 +318,7 @@ class ControllerInputHandler:
                     else:
                         print(f"Failed to connect to controller {ip}")
                 else:
-                    print(f"Controller {ip} (DIP: {state.dip}) not assigned - maximum 4 controllers supported")
+                    print(f"Controller {ip} (DIP: {state.dip}) not assigned - no mapping found")
 
             self.initialized = len(self.controllers) > 0
 
@@ -517,7 +518,7 @@ class SnakeData:
         self.score = 0
 
 class SnakeScene(Scene):
-    def __init__(self, width=20, height=20, length=20, frameRate=3, input_handler_type='controller'):
+    def __init__(self, width=20, height=20, length=20, frameRate=3, input_handler_type='controller', config=None):
         super().__init__()
         self.thickness = 2
         self.width = width // self.thickness
@@ -532,10 +533,33 @@ class SnakeScene(Scene):
         self.menu_votes = {}  # Maps controller_id to their difficulty vote
         self.voting_states = {}  # Maps controller_id to whether they have voted
 
+        # Store controller mapping from config
+        self.controller_mapping = {}
+        if config and 'scene' in config and '3d_snake' in config['scene']:
+            scene_config = config['scene']['3d_snake']
+            if 'controller_mapping' in scene_config:
+                print("Found controller mapping in config:", scene_config['controller_mapping'])
+                # Convert string keys to PlayerID enum values
+                for role, dip in scene_config['controller_mapping'].items():
+                    try:
+                        # Convert role to uppercase
+                        role_upper = role.upper()
+                        player_id = PlayerID[role_upper]
+                        self.controller_mapping[dip] = player_id
+                        print(f"Mapped controller DIP {dip} to {player_id.name}")
+                    except KeyError:
+                        print(f"Warning: Unknown player role '{role}' in controller mapping")
+            else:
+                print("No controller_mapping found in scene config")
+        else:
+            print("No scene config found in config file")
+
+        print("Final controller mapping:", {dip: pid.name for dip, pid in self.controller_mapping.items()})
+
         print(f"Initializing SnakeScene with input type: {input_handler_type}")
         if input_handler_type == 'controller':
             print("Attempting to initialize controller input...")
-            controller_handler = ControllerInputHandler()
+            controller_handler = ControllerInputHandler(controller_mapping=self.controller_mapping)
             if controller_handler.start_initialization():
                 self.input_handler = controller_handler
                 print("Controller input handler started.")

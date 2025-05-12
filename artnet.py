@@ -144,12 +144,13 @@ class Scene(ABC):
         pass
 
 
-def load_scene(path: str) -> Scene:
+def load_scene(path: str, config=None) -> Scene:
     """
     Load a scene plugin from a Python file
 
     Args:
         path: Path to the Python file containing the scene
+        config: Optional configuration to pass to the scene constructor
 
     Returns:
         An instance of the scene class
@@ -194,7 +195,7 @@ def load_scene(path: str) -> Scene:
         raise ValueError(f"Multiple Scene subclasses found in {path}")
 
     # Create and return instance
-    return scene_classes[0]()
+    return scene_classes[0](config=config)
 
 
 class ArtNetController:

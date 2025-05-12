@@ -136,7 +136,10 @@ def main():
 
     # Load scene
     try:
-        scene = load_scene(args.scene) if args.scene else create_default_scene()
+        # Load raw config for scene
+        with open(args.config, 'r') as f:
+            config = json.load(f)
+        scene = load_scene(args.scene, config=config) if args.scene else create_default_scene()
     except (ImportError, ValueError) as e:
         print(f"Error loading scene: {e}")
         return
