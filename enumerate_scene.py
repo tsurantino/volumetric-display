@@ -10,6 +10,7 @@ class EnumerateScene(Scene):
     def render(self, raster, time):
         if input('Press `n` to advance to the next layer: ').strip() == 'n':
             self.index += 1
+            self.index = self.index % raster.length
 
         print("Drawing layer %d" % self.index)
 

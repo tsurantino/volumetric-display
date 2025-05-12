@@ -15,7 +15,7 @@ class Plane:
         norm = math.sqrt(sum(n**2 for n in self.normal))
         self.normal = [n / norm
                        for n in self.normal]  # Normalize the normal vector
-        self.velocity = random.uniform(0.5, 4)
+        self.velocity = random.uniform(0.05, 0.2)
         self.color = RGB.from_hsv(HSV(random.randint(0, 255), 255, 255))
 
     def update(self, delta_time):
@@ -51,7 +51,7 @@ class PlaneScene(Scene):
 
     def render(self, raster, time):
         self.dimensions = (raster.width, raster.height, raster.length)
-        if random.random() < 0.1:  # Randomly spawn new planes
+        if random.random() < 0.1 and len(self.planes) < 3:  # Randomly spawn new planes
             self.spawn_plane()
         self.update_planes(
             1)  # Update planes with a fixed delta time of 1 for simplicity

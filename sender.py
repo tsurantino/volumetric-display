@@ -1,6 +1,8 @@
 import argparse
 import time
 import math
+import json
+from typing import List, Dict
 from artnet import ArtNetController, Raster, RGB, Scene, load_scene
 
 # Configuration
@@ -11,6 +13,24 @@ ARTNET_PORT = 6454  # Default ArtNet UDP port
 UNIVERSE = 0  # Universe ID
 CHANNELS = 512  # Max DMX channels
 
+class DisplayConfig:
+    def __init__(self, config_path: str):
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+        
+        # Parse geometry
+        width, height, length = map(int, config['geometry'].split('x'))
+        self.width = width
+        self.height = height
+        self.length = length
+        
+        # Parse z mapping
+        self.z_mapping = []
+        for mapping in config['z_mapping']:
+            self.z_mapping.append({
+                'ip': mapping['ip'],
+                'z_indices': mapping['z_idx']
+            })
 
 def create_default_scene():
     """Creates a built-in default scene with the original wave pattern"""
@@ -43,18 +63,10 @@ def create_default_scene():
 def main():
     parser = argparse.ArgumentParser(
         description="ArtNet DMX Transmission with Sync")
-    parser.add_argument("--ip",
+    parser.add_argument("--config",
                         type=str,
-                        default=ARTNET_IP,
-                        help="ArtNet controller IP address")
-    parser.add_argument("--port",
-                        type=int,
-                        default=ARTNET_PORT,
-                        help="ArtNet controller port")
-    parser.add_argument("--geometry",
-                        type=str,
-                        default="20x20x20",
-                        help="Raster geometry (e.g., 20x20x20)")
+                        required=True,
+                        help="Path to display configuration JSON file")
     parser.add_argument("--layer-span",
                         type=int,
                         default=1,
@@ -68,22 +80,32 @@ def main():
                         help="Path to a scene plugin file")
     args = parser.parse_args()
 
-    width, height, length = map(int, args.geometry.split("x"))
-
-    raster = Raster(width=width, height=height, length=length)
+    # Load display configuration
+    display_config = DisplayConfig(args.config)
+    
+    # Create raster with full geometry
+    raster = Raster(width=display_config.width, 
+                   height=display_config.height, 
+                   length=display_config.length)
     raster.brightness = args.brightness
-    controller = ArtNetController(args.ip, args.port)
+
+    # Create controllers for each IP
+    controllers = {}
+    for mapping in display_config.z_mapping:
+        ip = mapping['ip']
+        if ip not in controllers:
+            controllers[ip] = ArtNetController(ip, ARTNET_PORT)
 
     # Load scene
     try:
-        scene = load_scene(
-            args.scene) if args.scene else create_default_scene()
+        scene = load_scene(args.scene) if args.scene else create_default_scene()
     except (ImportError, ValueError) as e:
         print(f"Error loading scene: {e}")
         return
 
     start_time = time.time()
     print("🚀 Starting ArtNet DMX Transmission with Sync...")
+    print(f"Using {len(controllers)} controllers for {display_config.length} z-slices")
 
     try:
         while True:
