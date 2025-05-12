@@ -114,6 +114,129 @@ class PygameInputHandler:
                     return Direction.RIGHT
         return None
 
+class DisplayManager:
+    def __init__(self):
+        self.last_display_update = 0
+        self.display_update_interval = 0.1  # Update displays every 100ms
+
+    def _log_lcd_command(self, controller_id, line, text):
+        """Log an LCD command being sent to a controller."""
+        print(f"LCD[{controller_id}] Line {line}: {text}")
+
+    async def update_displays(self, controllers, game_state):
+        """Update all controller displays with current game state."""
+        current_time = time.monotonic()
+        if current_time - self.last_display_update < self.display_update_interval:
+            return
+
+        self.last_display_update = current_time
+
+        async def update_single_controller(controller_state, player_id):
+            if game_state.countdown_active:
+                # Show countdown display
+                controller_state.clear()
+                config = PLAYER_CONFIG[player_id]
+                team = config['team']
+                difficulty_text = ">>> EASY <<<" if game_state.difficulty == Difficulty.EASY else ">>> MEDIUM <<<" if game_state.difficulty == Difficulty.MEDIUM else ">>> HARD <<<"
+                
+                #self._log_lcd_command(controller_state.dip, 0, f"TEAM {team.name}")
+                #self._log_lcd_command(controller_state.dip, 1, difficulty_text)
+                #self._log_lcd_command(controller_state.dip, 2, f"GET READY! {game_state.countdown_value}...")
+                #self._log_lcd_command(controller_state.dip, 3, "Hold SELECT to EXIT")
+                
+                controller_state.write_lcd(0, 0, f"TEAM {team.name}")
+                controller_state.write_lcd(0, 1, difficulty_text)
+                controller_state.write_lcd(0, 2, f"GET READY! {game_state.countdown_value}...")
+                controller_state.write_lcd(0, 3, "Hold SELECT to EXIT")
+                await controller_state.commit()
+                return
+
+            if game_state.menu_active:
+                # Show difficulty selection menu
+                input_handler = game_state.input_handler
+                current_selection = game_state.menu_selections.get(controller_state.dip, 0)
+                has_voted = game_state.voting_states.get(controller_state.dip, False)
+                waiting_count = sum(1 for v in game_state.voting_states.values() if v)
+                total_players = len(controllers)
+                
+                # Count votes for each difficulty
+                easy_votes = sum(1 for v in game_state.menu_votes.values() if v == Direction.UP)
+                medium_votes = sum(1 for v in game_state.menu_votes.values() if v == Direction.DOWN)
+                hard_votes = sum(1 for v in game_state.menu_votes.values() if v is None)
+                
+                # Show '<' for current selection, 'X' for confirmed vote
+                easy_marker = "X" if has_voted and game_state.menu_votes.get(controller_state.dip) == Direction.UP else "<" if current_selection == 0 else " "
+                medium_marker = "X" if has_voted and game_state.menu_votes.get(controller_state.dip) == Direction.DOWN else "<" if current_selection == 1 else " "
+                hard_marker = "X" if has_voted and game_state.menu_votes.get(controller_state.dip) is None else "<" if current_selection == 2 else " "
+                
+                # Clear the back buffer
+                controller_state.clear()
+                
+                # Build the display in the back buffer
+                #self._log_lcd_command(controller_state.dip, 0, "SELECT DIFFICULTY")
+                #self._log_lcd_command(controller_state.dip, 1, f"EASY {easy_marker} {easy_votes if easy_votes > 0 else ''}")
+                #self._log_lcd_command(controller_state.dip, 2, f"MEDIUM {medium_marker} {medium_votes if medium_votes > 0 else ''}")
+                #self._log_lcd_command(controller_state.dip, 3, f"HARD {hard_marker} {hard_votes if hard_votes > 0 else ''}")
+                status_text = f"Waiting for {total_players - waiting_count} more" if has_voted else "Press SELECT to vote"
+                #self._log_lcd_command(controller_state.dip, 4, status_text)
+                
+                controller_state.write_lcd(0, 0, "SELECT DIFFICULTY")
+                controller_state.write_lcd(0, 1, "EASY")
+                controller_state.write_lcd(7, 1, easy_marker)
+                if easy_votes > 0:
+                    controller_state.write_lcd(17, 1, str(easy_votes))
+                
+                controller_state.write_lcd(0, 2, "MEDIUM")
+                controller_state.write_lcd(7, 2, medium_marker)
+                if medium_votes > 0:
+                    controller_state.write_lcd(17, 2, str(medium_votes))
+                
+                controller_state.write_lcd(0, 3, "HARD")
+                controller_state.write_lcd(7, 3, hard_marker)
+                if hard_votes > 0:
+                    controller_state.write_lcd(17, 3, str(hard_votes))
+                
+                controller_state.write_lcd(0, 4, status_text)
+                
+                # Commit the changes to the display
+                await controller_state.commit()
+            else:
+                # Show game state (team assignment and scores)
+                config = PLAYER_CONFIG[player_id]
+                team = config['team']
+                snake_id = team.name.lower()
+                snake = game_state.snakes[snake_id]
+                other_snake_id = 'orange' if snake_id == 'blue' else 'blue'
+                other_snake = game_state.snakes[other_snake_id]
+
+                # Clear the back buffer
+                controller_state.clear()
+
+                # Show team assignment
+                team_text = f"TEAM: {team.name}"
+                #self._log_lcd_command(controller_state.dip, 0, team_text)
+                #self._log_lcd_command(controller_state.dip, 1, f"SCORE: {snake.score}")
+                #self._log_lcd_command(controller_state.dip, 2, f"OPPONENT: {other_snake.score}")
+                #self._log_lcd_command(controller_state.dip, 3, "Hold SELECT to EXIT")
+
+                controller_state.write_lcd(0, 0, team_text)
+                controller_state.write_lcd(0, 1, "SCORE:")
+                controller_state.write_lcd(16, 1, str(snake.score))
+                controller_state.write_lcd(0, 2, "OPPONENT:")
+                controller_state.write_lcd(16, 2, str(other_snake.score))
+                controller_state.write_lcd(0, 3, "Hold SELECT to EXIT")
+
+                # Commit the changes to the display
+                await controller_state.commit()
+
+        # Create and gather all controller update tasks
+        update_tasks = [
+            update_single_controller(controller_state, player_id)
+            for controller_id, (controller_state, player_id) in controllers.items()
+        ]
+        if update_tasks:
+            await asyncio.gather(*update_tasks)
+
 class ControllerInputHandler:
     def __init__(self):
         self.cp = control_port.ControlPort()
@@ -127,12 +250,9 @@ class ControllerInputHandler:
         self._init_task = None
         self._listen_tasks = {}  # Maps controller_id to its listen task
         self.select_hold_data = {}  # Maps controller_id to {'start_time': float, 'is_counting_down': bool}
-        self.last_display_update = 0
-        self.display_update_interval = 0.1  # Update displays every 100ms
         self.last_button_states = {}  # Maps controller_id to list of button states
-        self.menu_votes = {}  # Maps controller_id to their difficulty vote
-        self.menu_selections = {}  # Maps controller_id to their current selection (0=EASY, 1=MEDIUM, 2=HARD)
         self.menu_selection_time = 0  # Time of last menu selection change
+        self.menu_votes = {}  # Maps controller_id to their difficulty vote
         self.voting_states = {}  # Maps controller_id to whether they have voted
 
     async def _async_initialize_and_listen(self):
@@ -209,20 +329,8 @@ class ControllerInputHandler:
             if self.select_hold_data[controller_id]['is_counting_down']:
                 # If held for less than 1 second, treat as menu selection
                 if time.monotonic() - self.select_hold_data[controller_id]['start_time'] < 1.0:
-                    if controller_id in self.voting_states and self.voting_states[controller_id]:
-                        # If already voted, remove vote
-                        self.voting_states[controller_id] = False
-                        self.menu_votes.pop(controller_id, None)
-                    else:
-                        # Convert current selection to vote
-                        selection = self.menu_selections.get(controller_id, 0)
-                        if selection == 0:
-                            self.menu_votes[controller_id] = Direction.UP  # EASY
-                        elif selection == 1:
-                            self.menu_votes[controller_id] = Direction.DOWN  # MEDIUM
-                        else:
-                            self.menu_votes[controller_id] = None  # HARD
-                        self.voting_states[controller_id] = True
+                    with self._lock:
+                        self.event_queue.append((player_id, Button.SELECT))
             self.select_hold_data[controller_id]['is_counting_down'] = False
 
         # Handle directional buttons for snake control
@@ -244,23 +352,13 @@ class ControllerInputHandler:
         current_time = time.monotonic()
         if current_time - self.menu_selection_time > 0.2:  # Debounce menu selection
             if buttons[Button.UP.value] and not self.last_button_states.get(controller_id, [False] * 5)[Button.UP.value]:
-                # Move selection up (0->1->2->0)
-                current = self.menu_selections.get(controller_id, 0)
-                self.menu_selections[controller_id] = (current - 1) % 3
+                with self._lock:
+                    self.event_queue.append((player_id, Button.UP))
                 self.menu_selection_time = current_time
-                # If player was in voting state, remove their vote
-                if controller_id in self.voting_states and self.voting_states[controller_id]:
-                    self.voting_states[controller_id] = False
-                    self.menu_votes.pop(controller_id, None)
             elif buttons[Button.DOWN.value] and not self.last_button_states.get(controller_id, [False] * 5)[Button.DOWN.value]:
-                # Move selection down (0->2->1->0)
-                current = self.menu_selections.get(controller_id, 0)
-                self.menu_selections[controller_id] = (current + 1) % 3
+                with self._lock:
+                    self.event_queue.append((player_id, Button.DOWN))
                 self.menu_selection_time = current_time
-                # If player was in voting state, remove their vote
-                if controller_id in self.voting_states and self.voting_states[controller_id]:
-                    self.voting_states[controller_id] = False
-                    self.menu_votes.pop(controller_id, None)
 
         # Store the new state
         self.last_button_states[controller_id] = list(buttons)
@@ -294,105 +392,6 @@ class ControllerInputHandler:
         self.menu_votes.clear()
         self.menu_selections.clear()
         self.voting_states.clear()
-
-    async def _update_controller_displays(self, snakes_data, game_over_active, menu_active=False, countdown=None):
-        """Update all controller displays with current game state."""
-        current_time = time.monotonic()
-        if current_time - self.last_display_update < self.display_update_interval:
-            return
-
-        self.last_display_update = current_time
-
-        async def update_single_controller(controller_state, player_id):
-            if countdown is not None:
-                # Show countdown display
-                controller_state.clear()
-                controller_state.write_lcd(0, 0, f"Starting in {countdown}...")
-                controller_state.write_lcd(0, 1, "GET READY!")
-                controller_state.write_lcd(0, 2, "")
-                controller_state.write_lcd(0, 3, "Hold SELECT to EXIT")
-                await controller_state.commit()
-                return
-
-            if menu_active:
-                # Show difficulty selection menu
-                current_selection = self.menu_selections.get(controller_state.dip, 0)
-                has_voted = self.voting_states.get(controller_state.dip, False)
-                waiting_count = sum(1 for v in self.voting_states.values() if v)
-                total_players = len(self.controllers)
-                
-                # Count votes for each difficulty
-                easy_votes = sum(1 for v in self.menu_votes.values() if v == Direction.UP)
-                medium_votes = sum(1 for v in self.menu_votes.values() if v == Direction.DOWN)
-                hard_votes = sum(1 for v in self.menu_votes.values() if v is None)
-                
-                # Show '<' for current selection, 'X' for confirmed vote
-                easy_marker = "X" if has_voted and self.menu_votes.get(controller_state.dip) == Direction.UP else "<" if current_selection == 0 else " "
-                medium_marker = "X" if has_voted and self.menu_votes.get(controller_state.dip) == Direction.DOWN else "<" if current_selection == 1 else " "
-                hard_marker = "X" if has_voted and self.menu_votes.get(controller_state.dip) is None else "<" if current_selection == 2 else " "
-                
-                # Clear the back buffer
-                controller_state.clear()
-                
-                # Build the display in the back buffer
-                controller_state.write_lcd(0, 0, "SELECT DIFFICULTY")
-                controller_state.write_lcd(0, 1, "EASY")
-                controller_state.write_lcd(7, 1, easy_marker)
-                if easy_votes > 0:
-                    controller_state.write_lcd(17, 1, str(easy_votes))
-                
-                controller_state.write_lcd(0, 2, "MEDIUM")
-                controller_state.write_lcd(7, 2, medium_marker)
-                if medium_votes > 0:
-                    controller_state.write_lcd(17, 2, str(medium_votes))
-                
-                controller_state.write_lcd(0, 3, "HARD")
-                controller_state.write_lcd(7, 3, hard_marker)
-                if hard_votes > 0:
-                    controller_state.write_lcd(17, 3, str(hard_votes))
-                
-                status_text = f"Waiting for {total_players - waiting_count} more" if has_voted else "Press SELECT to vote"
-                controller_state.write_lcd(0, 4, status_text)
-                
-                # Commit the changes to the display
-                await controller_state.commit()
-            else:
-                # Show game state (team assignment and scores)
-                config = PLAYER_CONFIG[player_id]
-                team = config['team']
-                snake_id = team.name.lower()
-                snake = snakes_data[snake_id]
-                other_snake_id = 'orange' if snake_id == 'blue' else 'blue'
-                other_snake = snakes_data[other_snake_id]
-
-                # Clear the back buffer
-                controller_state.clear()
-
-                # Show team assignment
-                team_text = f"TEAM: {team.name}"
-                controller_state.write_lcd(0, 0, team_text)
-
-                # Show scores
-                score_text = f"SCORE: {snake.score}"
-                other_score_text = f"OPPONENT: {other_snake.score}"
-                controller_state.write_lcd(0, 1, "SCORE:")
-                controller_state.write_lcd(16, 1, str(snake.score))
-                controller_state.write_lcd(0, 2, "OPPONENT:")
-                controller_state.write_lcd(16, 2, str(other_snake.score))
-
-                # Show controls reminder
-                controller_state.write_lcd(0, 3, "Hold SELECT to EXIT")
-
-                # Commit the changes to the display
-                await controller_state.commit()
-
-        # Create and gather all controller update tasks
-        update_tasks = [
-            update_single_controller(controller_state, player_id)
-            for controller_id, (controller_state, player_id) in self.controllers.items()
-        ]
-        if update_tasks:
-            await asyncio.gather(*update_tasks)
 
     def start_initialization(self):
         """Starts the background thread and waits for initialization."""
@@ -515,15 +514,20 @@ class SnakeScene(Scene):
         else:
             self.input_handler = PygameInputHandler()
 
+        self.display_manager = DisplayManager()
         self.reset_game()
         self.last_update_time = 0
-        self.last_countdown_time = 0  # Add this line to track countdown timing separately
+        self.last_countdown_time = 0
         self.game_over_active = False
         self.game_over_flash_state = {'count': 0, 'timer': 0, 'interval': 0.2, 'border_on': False}
         self.menu_active = True
         self.countdown_active = False
         self.countdown_value = None
         self.difficulty = None
+        # Menu state
+        self.menu_selections = {}  # Maps controller_id to their current selection (0=EASY, 1=MEDIUM, 2=HARD)
+        self.menu_votes = {}  # Maps controller_id to their difficulty vote
+        self.voting_states = {}  # Maps controller_id to whether they have voted
 
     def valid(self, x, y, z):
         if self.difficulty in [Difficulty.EASY, Difficulty.MEDIUM]:
@@ -673,41 +677,85 @@ class SnakeScene(Scene):
         if not isinstance(self.input_handler, ControllerInputHandler):
             return
 
-        votes = self.input_handler.menu_votes
-        if len(votes) == len(self.input_handler.controllers):
-            # All players have voted
-            vote_counts = {Difficulty.EASY: 0, Difficulty.MEDIUM: 0, Difficulty.HARD: 0}
-            for vote in votes.values():
-                if vote == Direction.UP:
-                    vote_counts[Difficulty.EASY] += 1
-                elif vote == Direction.DOWN:
-                    vote_counts[Difficulty.MEDIUM] += 1
-                else:
-                    vote_counts[Difficulty.HARD] += 1
+        # Check if all active controllers have voted
+        active_controllers = set(self.input_handler.controllers.keys())
+        voted_controllers = set(self.voting_states.keys())
+        if not active_controllers.issubset(voted_controllers):
+            return  # Not all controllers have voted yet
 
-            # Find highest vote count
-            max_votes = max(vote_counts.values())
-            # Get all difficulties with max votes
-            max_difficulties = [d for d, v in vote_counts.items() if v == max_votes]
-            # Randomly select from tied difficulties
-            self.difficulty = random.choice(max_difficulties)
-
-            # Set game speed based on difficulty
-            if self.difficulty == Difficulty.EASY:
-                self.frameRate = self.base_frame_rate // 2  # Half speed
+        # All players have voted
+        vote_counts = {Difficulty.EASY: 0, Difficulty.MEDIUM: 0, Difficulty.HARD: 0}
+        for vote in self.menu_votes.values():
+            if vote == Direction.UP:
+                vote_counts[Difficulty.EASY] += 1
+            elif vote == Direction.DOWN:
+                vote_counts[Difficulty.MEDIUM] += 1
             else:
-                self.frameRate = self.base_frame_rate  # Normal speed
+                vote_counts[Difficulty.HARD] += 1
 
-            # Start countdown
-            self.menu_active = False
-            self.countdown_active = True
-            self.countdown_value = 3
-            self.input_handler.clear_menu_votes()
+        # Find highest vote count
+        max_votes = max(vote_counts.values())
+        # Get all difficulties with max votes
+        max_difficulties = [d for d, v in vote_counts.items() if v == max_votes]
+        # Randomly select from tied difficulties
+        self.difficulty = random.choice(max_difficulties)
 
-    def render(self, raster, time):
+        # Set game speed based on difficulty
+        if self.difficulty == Difficulty.EASY:
+            self.frameRate = self.base_frame_rate // 2  # Half speed
+        else:
+            self.frameRate = self.base_frame_rate  # Normal speed
+
+        # Start countdown
+        self.menu_active = False
+        self.countdown_active = True
+        self.countdown_value = 3
+        self.last_countdown_time = time.monotonic()  # Initialize countdown timer
+        self.input_handler.clear_all_select_holds()  # Clear any held SELECT buttons
+
+    def process_menu_input(self, player_id, action):
+        """Process menu-related input."""
+        if not isinstance(self.input_handler, ControllerInputHandler):
+            return
+
+        controller_id = next(cid for cid, (_, pid) in self.input_handler.controllers.items() if pid == player_id)
+        
+        if action == Button.SELECT:
+            if controller_id in self.voting_states and self.voting_states[controller_id]:
+                # If already voted, remove vote
+                self.voting_states[controller_id] = False
+                self.menu_votes.pop(controller_id, None)
+            else:
+                # Convert current selection to vote
+                selection = self.menu_selections.get(controller_id, 0)
+                if selection == 0:
+                    self.menu_votes[controller_id] = Direction.UP  # EASY
+                elif selection == 1:
+                    self.menu_votes[controller_id] = Direction.DOWN  # MEDIUM
+                else:
+                    self.menu_votes[controller_id] = None  # HARD
+                self.voting_states[controller_id] = True
+        elif action == Button.UP:
+            # Move selection up (0->1->2->0)
+            current = self.menu_selections.get(controller_id, 0)
+            self.menu_selections[controller_id] = (current - 1) % 3
+            # If player was in voting state, remove their vote
+            if controller_id in self.voting_states and self.voting_states[controller_id]:
+                self.voting_states[controller_id] = False
+                self.menu_votes.pop(controller_id, None)
+        elif action == Button.DOWN:
+            # Move selection down (0->2->1->0)
+            current = self.menu_selections.get(controller_id, 0)
+            self.menu_selections[controller_id] = (current + 1) % 3
+            # If player was in voting state, remove their vote
+            if controller_id in self.voting_states and self.voting_states[controller_id]:
+                self.voting_states[controller_id] = False
+                self.menu_votes.pop(controller_id, None)
+
+    def render(self, raster, current_time):
         # Update game state
-        if time - self.last_update_time >= 1.0/self.frameRate:
-            self.last_update_time = time
+        if current_time - self.last_update_time >= 1.0/self.frameRate:
+            self.last_update_time = current_time
 
             if isinstance(self.input_handler, ControllerInputHandler):
                 # Handle menu and countdown
@@ -715,12 +763,16 @@ class SnakeScene(Scene):
                     self.select_difficulty()
                 elif self.countdown_active:
                     # Decrement countdown every second
-                    if time - self.last_countdown_time >= 1.0:  # Use separate timer for countdown
+                    current_time = time.monotonic()
+                    if current_time - self.last_countdown_time >= 1.0:  # Use separate timer for countdown
+                        print(f"Countdown: {self.countdown_value}")  # Debug log
                         self.countdown_value -= 1
-                        self.last_countdown_time = time  # Update the countdown timer
+                        self.last_countdown_time = current_time  # Update the countdown timer
                         if self.countdown_value <= 0:
+                            print("Countdown finished, starting game")  # Debug log
                             self.countdown_active = False
                             self.game_started = True
+                            print(f"Game started with difficulty: {self.difficulty.name}")
 
                 # Process controller inputs
                 input_event = self.input_handler.get_direction_key()
@@ -731,8 +783,7 @@ class SnakeScene(Scene):
                         if self.game_over_active:
                             self.reset_game()
                     elif self.menu_active:
-                        # Menu navigation is handled in _button_callback
-                        pass
+                        self.process_menu_input(player_id, action)
 
                 # Update game state if started and not in menu/countdown
                 if self.game_started and not self.game_over_active:
@@ -747,11 +798,9 @@ class SnakeScene(Scene):
 
                 # Update controller displays
                 asyncio.run_coroutine_threadsafe(
-                    self.input_handler._update_controller_displays(
-                        self.snakes,
-                        self.game_over_active,
-                        menu_active=self.menu_active,
-                        countdown=self.countdown_value if self.countdown_active else None
+                    self.display_manager.update_displays(
+                        self.input_handler.controllers,
+                        self
                     ),
                     self.input_handler.loop
                 )
@@ -764,7 +813,6 @@ class SnakeScene(Scene):
                     raster.data[idx] = black
 
         # Draw explosions
-        current_time = time  # Use the passed time parameter
         active_explosions = []
         for explosion in self.explosions:
             if not explosion.is_expired(current_time):
