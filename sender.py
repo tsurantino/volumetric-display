@@ -2,7 +2,7 @@ import argparse
 import time
 import math
 import json
-from typing import List, Dict
+from typing import List, Dict, Tuple
 from artnet import ArtNetController, Raster, RGB, Scene, load_scene
 
 # Configuration
@@ -32,6 +32,44 @@ class DisplayConfig:
                 'z_indices': mapping['z_idx']
             })
 
+        # Parse orientation
+        self.orientation = config.get('orientation', ['X', 'Y', 'Z'])
+        self._validate_orientation()
+        self._compute_transform()
+
+    def _validate_orientation(self):
+        """Validate that orientation contains valid coordinate mappings."""
+        valid_coords = {'X', 'Y', 'Z', '-X', '-Y', '-Z'}
+        if len(self.orientation) != 3:
+            raise ValueError("Orientation must specify exactly 3 coordinates")
+        if not all(coord in valid_coords for coord in self.orientation):
+            raise ValueError(f"Invalid coordinate in orientation. Must be one of: {valid_coords}")
+        # Extract just the axis letters and check for uniqueness
+        axes = [coord[-1] for coord in self.orientation]
+        if len(set(axes)) != 3:
+            raise ValueError("Each coordinate axis must appear exactly once in orientation")
+
+    def _compute_transform(self):
+        """Compute the transformation matrix for coordinate mapping."""
+        self.transform = []
+        for coord in self.orientation:
+            axis = coord[-1]  # Get the axis (X, Y, or Z)
+            sign = -1 if coord.startswith('-') else 1
+            if axis == 'X':
+                self.transform.append((0, sign))
+            elif axis == 'Y':
+                self.transform.append((1, sign))
+            else:  # Z
+                self.transform.append((2, sign))
+
+    def transform_coordinates(self, x: int, y: int, z: int) -> Tuple[int, int, int]:
+        """Transform coordinates according to the orientation configuration."""
+        coords = [x, y, z]
+        result = [0, 0, 0]
+        for i, (axis, sign) in enumerate(self.transform):
+            result[i] = coords[axis] * sign
+        return tuple(result)
+
 def create_default_scene():
     """Creates a built-in default scene with the original wave pattern"""
 
@@ -41,9 +79,6 @@ def create_default_scene():
             for y in range(raster.height):
                 for x in range(raster.width):
                     for z in range(raster.length):
-                        # Calculate pixel index
-                        idx = y * raster.width + x + z * raster.width * raster.height
-
                         # Calculate color
                         red = int(127 * math.sin(0.5 * math.sin(time * 5) * x +
                                                  z * 0.2 + time * 10) + 128)
@@ -54,8 +89,8 @@ def create_default_scene():
                                                   (x + y + z) + time * 10) +
                                    128)
 
-                        # Set pixel color
-                        raster.data[idx] = RGB(red, green, blue)
+                        # Set pixel color using set_pix
+                        raster.set_pix(x, y, z, RGB(red, green, blue))
 
     return WaveScene()
 
@@ -86,7 +121,8 @@ def main():
     # Create raster with full geometry
     raster = Raster(width=display_config.width, 
                    height=display_config.height, 
-                   length=display_config.length)
+                   length=display_config.length,
+                   orientation=display_config.orientation)
     raster.brightness = args.brightness
 
     # Create controllers for each IP
@@ -108,6 +144,7 @@ def main():
     start_time = time.time()
     print("🚀 Starting ArtNet DMX Transmission with Sync...")
     print(f"Using {len(controllers)} controllers for {display_config.length} z-slices")
+    print(f"Orientation: {display_config.orientation}")
 
     try:
         while True:

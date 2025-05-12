@@ -809,8 +809,7 @@ class SnakeScene(Scene):
         for y in range(raster.height):
             for x in range(raster.width):
                 for z in range(raster.length):
-                    idx = y * raster.width + x + z * raster.width * raster.height
-                    raster.data[idx] = black
+                    raster.set_pix(x, y, z, black)
 
         # Draw explosions
         active_explosions = []
@@ -835,10 +834,9 @@ class SnakeScene(Scene):
                                 if (0 <= nx < raster.width and 
                                     0 <= ny < raster.height and 
                                     0 <= nz < raster.length):
-                                    idx = ny * raster.width + nx + nz * raster.width * raster.height
                                     # Create rainbow color based on position
                                     hue = ((dx + dy + dz) * 4 + current_time * 50) % 256
-                                    raster.data[idx] = RGB.from_hsv(HSV(hue, 255, 255))
+                                    raster.set_pix(nx, ny, nz, RGB.from_hsv(HSV(hue, 255, 255)))
         self.explosions = active_explosions
 
         # Draw game over border if active
@@ -850,8 +848,7 @@ class SnakeScene(Scene):
                         if (x == 0 or x == raster.width-1 or
                             y == 0 or y == raster.height-1 or
                             z == 0 or z == raster.length-1):
-                            idx = y * raster.width + x + z * raster.width * raster.height
-                            raster.data[idx] = red
+                            raster.set_pix(x, y, z, red)
 
         # Draw both snakes
         for snake_id, snake in self.snakes.items():
@@ -864,11 +861,10 @@ class SnakeScene(Scene):
                     for dx in range(self.thickness):
                         for dy in range(self.thickness):
                             for dz in range(self.thickness):
-                                idx = (y+dy) * raster.width + (x+dx) + (z+dz) * raster.width * raster.height
                                 if i == 0:  # Head
-                                    raster.data[idx] = red
+                                    raster.set_pix(x+dx, y+dy, z+dz, red)
                                 else:  # Body
-                                    raster.data[idx] = snake.color
+                                    raster.set_pix(x+dx, y+dy, z+dz, snake.color)
 
         # Draw the apple
         x, y, z = self.apple
@@ -878,8 +874,7 @@ class SnakeScene(Scene):
         for dx in range(self.thickness):
             for dy in range(self.thickness):
                 for dz in range(self.thickness):
-                    idx = (y+dy) * raster.width + (x+dx) + (z+dz) * raster.width * raster.height
-                    raster.data[idx] = white
+                    raster.set_pix(x+dx, y+dy, z+dz, white)
 
     def cleanup(self):
         """Clean up resources."""

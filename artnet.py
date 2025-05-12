@@ -66,13 +66,60 @@ class Raster:
     length: int
     brightness: float
     data: list[RGB]
+    orientation: list[str]
 
-    def __init__(self, width, height, length):
+    def __init__(self, width, height, length, orientation=None):
         self.width = width
         self.height = height
         self.length = length
         self.brightness = 1.0
         self.data = [RGB(0, 0, 0) for _ in range((width * height * length))]
+        self.orientation = orientation or ['X', 'Y', 'Z']
+        self._compute_transform()
+
+    def _compute_transform(self):
+        """Compute the transformation matrix for coordinate mapping."""
+        self.transform = []
+        for coord in self.orientation:
+            axis = coord[-1]  # Get the axis (X, Y, or Z)
+            sign = -1 if coord.startswith('-') else 1
+            if axis == 'X':
+                self.transform.append((0, sign))
+            elif axis == 'Y':
+                self.transform.append((1, sign))
+            else:  # Z
+                self.transform.append((2, sign))
+
+    def _transform_coords(self, x, y, z):
+        """Transform coordinates according to the orientation configuration."""
+        coords = [x, y, z]
+        result = [0, 0, 0]
+        for i, (axis, sign) in enumerate(self.transform):
+            if sign == 1:
+                result[i] = coords[axis]
+            else:  # sign == -1
+                # For negative axes, subtract from the maximum value
+                if axis == 0:  # X
+                    result[i] = self.width - 1 - coords[axis]
+                elif axis == 1:  # Y
+                    result[i] = self.height - 1 - coords[axis]
+                else:  # Z
+                    result[i] = self.length - 1 - coords[axis]
+        return tuple(result)
+
+    def set_pix(self, x, y, z, color):
+        """
+        Set a pixel color with coordinate transformation.
+        
+        Args:
+            x, y, z: Original coordinates
+            color: RGB color to set
+        """
+        # Transform coordinates
+        tx, ty, tz = self._transform_coords(x, y, z)
+        # Calculate index in the data array
+        idx = ty * self.width + tx + tz * self.width * self.height
+        self.data[idx] = color
 
 
 def saturate_u8(value):

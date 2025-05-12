@@ -59,7 +59,6 @@ class PlaneScene(Scene):
         for x in range(raster.width):
             for y in range(raster.height):
                 for z in range(raster.length):
-                    idx = x + y * raster.width + z * raster.width * raster.height
                     point = [
                         x - raster.width / 2, y - raster.height / 2,
                         z - raster.length / 2
@@ -79,6 +78,6 @@ class PlaneScene(Scene):
                             interpolated_color.red += color.red * weight
                             interpolated_color.green += color.green * weight
                             interpolated_color.blue += color.blue * weight
-                        raster.data[idx] = interpolated_color
+                        raster.set_pix(x, y, z, interpolated_color)
                     else:
-                        raster.data[idx] = RGB(0, 0, 0)
+                        raster.set_pix(x, y, z, RGB(0, 0, 0))
