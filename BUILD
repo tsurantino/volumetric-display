@@ -71,6 +71,14 @@ py_binary(
     srcs = ["gen_routing_table.py"],
 )
 
+py_binary(
+    name = "controller_simulator",
+    srcs = ["controller_simulator.py"],
+    deps = [
+        requirement("pygame"),
+    ],
+)
+
 refresh_compile_commands(
     name = "refresh_compile_commands",
 
