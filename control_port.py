@@ -6,7 +6,6 @@ import subprocess
 import platform
 import time
 
-CONTROLLER_PORT = 51333
 ENUM_COMMAND = b"enum\n"
 BUTTON_TIMEOUT = 0.1
 CONNECTION_TIMEOUT = 2.0
@@ -14,9 +13,10 @@ PING_TIMEOUT = 1.0  # seconds
 
 
 class ControllerState:
-    def __init__(self, ip, dip, width=20, height=4):
+    def __init__(self, ip, dip, port, width=20, height=4):
         self.ip = ip
         self.dip = dip
+        self.port = port
         self.button_callback = None
         self._listen_task = None
         self._heartbeat_task = None
@@ -39,7 +39,7 @@ class ControllerState:
         try:
             self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self._socket.settimeout(CONNECTION_TIMEOUT)
-            await loop.sock_connect(self._socket, (self.ip, CONTROLLER_PORT))
+            await loop.sock_connect(self._socket, (self.ip, self.port))
             self._socket.setblocking(False)
             self._connected = True
             self._last_message_time = time.monotonic()
@@ -242,11 +242,8 @@ class ControllerState:
 
 
 class ControlPort:
-    def __init__(self, base_ip="192.168.0.", start=50, end=65, port=CONTROLLER_PORT, loop=None):
-        self.base_ip = base_ip
-        self.start = start
-        self.end = end
-        self.port = port
+    def __init__(self, hosts_and_ports=[], loop=None):
+        self.hosts = hosts
         self.loop = loop or asyncio.get_event_loop()
         self.controllers = {}
 
@@ -286,34 +283,35 @@ class ControlPort:
         """Discover reachable hosts using ICMP ping and port check."""
         print("Discovering reachable hosts...")
         tasks = []
-        for i in range(self.start, self.end + 1):
-            ip = f"{self.base_ip}{i}"
+        for host_and_port in self.hosts_and_ports:
+            ip, port = host_and_port
             tasks.append(self.ping_host(ip))
 
         results = await asyncio.gather(*tasks)
-        reachable_ips = []
+        reachable_hosts_and_ports = []
         for i, is_reachable in enumerate(results):
-            ip = f"{self.base_ip}{i + self.start}"
+            ip, port = self.hosts_and_ports[i]
             if is_reachable:
                 print(f"Host {ip} is reachable")
                 # Check if the port is open
-                if await self.check_port(ip):
-                    reachable_ips.append(ip)
+                if await self.check_port(ip, port):
+                    reachable_hosts_and_ports.append(host_and_port)
             else:
                 print(f"Host {ip} is not reachable")
-        return reachable_ips
+        return reachable_hosts_and_ports
 
     async def enumerate(self, timeout=2.0):
         # First discover reachable hosts
-        reachable_ips = await self.discover_hosts()
-        if not reachable_ips:
+        reachable_hosts_and_ports = await self.discover_hosts()
+        if not reachable_hosts_and_ports:
             print("No reachable hosts found")
             return self.controllers
 
         # Then try to enumerate only the reachable hosts
         tasks = []
-        for ip in reachable_ips:
-            tasks.append(self._query_controller(ip, timeout / 2))
+        for host_and_port in reachable_hosts_and_ports:
+            ip, port = host_and_port
+            tasks.append(self._query_controller(ip, port, timeout / 2))
 
         try:
             results = await asyncio.wait_for(asyncio.gather(*tasks), timeout=timeout)
@@ -323,18 +321,18 @@ class ControlPort:
 
         for result in results:
             if result:
-                ip, dip = result
-                self.controllers[ip] = ControllerState(ip, dip)
+                ip, port, dip = result
+                self.controllers[ip] = ControllerState(ip, dip, port)
         return self.controllers
 
-    async def _query_controller(self, ip, timeout):
-        print(f"\nAttempting to enumerate {ip}:{self.port}")
+    async def _query_controller(self, ip, port, timeout):
+        print(f"\nAttempting to enumerate {ip}:{port}")
         loop = asyncio.get_running_loop()
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(timeout)
         try:
-            print(f"1. Connecting to {ip}:{self.port}")
-            await loop.sock_connect(sock, (ip, self.port))
+            print(f"1. Connecting to {ip}:{port}")
+            await loop.sock_connect(sock, (ip, port))
             print("2. Connection successful, setting non-blocking mode")
             sock.setblocking(False)
 
@@ -375,7 +373,7 @@ class ControlPort:
                                 await loop.sock_sendall(sock, b"noop\n")
                             elif msg.get("type") == "controller" and "dip" in msg:
                                 print(f"6. Successfully enumerated controller with DIP={msg['dip']}")
-                                return (ip, msg["dip"])
+                                return (ip, port, msg["dip"])
                         except json.JSONDecodeError as e:
                             print(f"Error decoding JSON: {e} on data: '{part_str}'")
                             continue
