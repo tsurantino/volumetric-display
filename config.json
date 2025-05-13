@@ -57,7 +57,29 @@
             ]
         }
     ],
-    "orientation": ["-Z", "Y", "X"],
+    "orientation": [
+        "-Z",
+        "Y",
+        "X"
+    ],
+    "controller_addresses": {
+        "0": {
+            "ip": "127.0.0.1",
+            "port": 51330
+        },
+        "1": {
+            "ip": "127.0.0.1",
+            "port": 51331
+        },
+        "2": {
+            "ip": "127.0.0.1",
+            "port": 51332
+        },
+        "3": {
+            "ip": "127.0.0.1",
+            "port": 51333
+        }
+    },
     "scene": {
         "3d_snake": {
             "controller_mapping": {

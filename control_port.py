@@ -243,7 +243,7 @@ class ControllerState:
 
 class ControlPort:
     def __init__(self, hosts_and_ports=[], loop=None):
-        self.hosts = hosts
+        self.hosts_and_ports = hosts_and_ports
         self.loop = loop or asyncio.get_event_loop()
         self.controllers = {}
 
@@ -264,17 +264,17 @@ class ControlPort:
             print(f"Error pinging {ip}: {e}")
             return False
 
-    async def check_port(self, ip):
+    async def check_port(self, ip, port):
         """Check if the port is open using a socket connection."""
         loop = asyncio.get_running_loop()
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(1.0)  # Short timeout for port check
         try:
-            result = await loop.sock_connect(sock, (ip, self.port))
-            print(f"Port {self.port} is open on {ip}")
+            result = await loop.sock_connect(sock, (ip, port))
+            print(f"Port {port} is open on {ip}")
             return True
         except Exception as e:
-            print(f"Port {self.port} is closed on {ip}: {e}")
+            print(f"Port {port} is closed on {ip}: {e}")
             return False
         finally:
             sock.close()

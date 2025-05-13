@@ -30,30 +30,51 @@ class GameScene(Scene):
         if config and 'scene' in config and '3d_snake' in config['scene']:
             scene_config = config['scene']['3d_snake']
             if 'controller_mapping' in scene_config:
-                # Convert string keys to PlayerID enum values
                 for role, dip in scene_config['controller_mapping'].items():
                     try:
-                        # Convert role to uppercase
-                        role_upper = role.upper()
-                        player_id = PlayerID[role_upper]
+                        player_id = PlayerID[role.upper()]
                         self.controller_mapping[dip] = player_id
                         print(f"Mapped controller DIP {dip} to {player_id.name}")
                     except KeyError:
                         print(f"Warning: Unknown player role '{role}' in controller mapping")
 
         print(f"Initializing game with input type: {input_handler_type}")
+        self.input_handler = None
         if input_handler_type == 'controller':
-            print("Attempting to initialize controller input...")
-            controller_handler = ControllerInputHandler(controller_mapping=self.controller_mapping)
-            if controller_handler.start_initialization():
-                self.input_handler = controller_handler
-                print("Controller input handler started.")
+            # Prepare addresses_to_enumerate for ControllerInputHandler
+            addresses_for_handler = None
+            if self.config and "controller_addresses" in self.config:
+                print("Found 'controller_addresses' in config.")
+                controller_addr_config = self.config["controller_addresses"]
+                if isinstance(controller_addr_config, dict): # Expecting dict like {"0": {"ip": ..., "port": ...}}
+                    addresses_for_handler = []
+                    for dip_str, addr_info in controller_addr_config.items():
+                        if isinstance(addr_info, dict) and 'ip' in addr_info and 'port' in addr_info:
+                            addresses_for_handler.append((addr_info['ip'], addr_info['port']))
+                        else:
+                            print(f"Warning: Invalid address info format for DIP {dip_str} in controller_addresses. Expected {{ip:str, port:int}}.")
+                    if not addresses_for_handler:
+                        print("Warning: 'controller_addresses' was present but parsed into an empty list.")
+                        addresses_for_handler = None # Fallback to no specific addresses
+                else:
+                    print("Warning: 'controller_addresses' is not a dictionary as expected. Will not use for specific enumeration.")
+            
+            if addresses_for_handler:
+                print(f"Passing specific addresses to ControllerInputHandler for enumeration: {addresses_for_handler}")
             else:
-                print("Controller initialization failed, falling back to Pygame.")
-                self.input_handler = None
-        else:
-            self.input_handler = None
+                print("No specific controller_addresses to pass; ControllerInputHandler will use its default enumeration (if any).")
 
+            # Pass controller_mapping for role assignment AND addresses_for_handler for ControlPort
+            self.input_handler = ControllerInputHandler(
+                controller_mapping=self.controller_mapping,
+                hosts_and_ports=addresses_for_handler
+            )
+            if not self.input_handler.start_initialization():
+                print("GameScene: ControllerInputHandler initialization failed.")
+                self.input_handler = None # Ensure it's None on failure
+            else:
+                print("GameScene: ControllerInputHandler initialized successfully.")
+        
         self.display_manager = DisplayManager()
         self.last_update_time = 0
         self.last_countdown_time = 0

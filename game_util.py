@@ -148,8 +148,8 @@ class DisplayManager:
             await asyncio.gather(*update_tasks)
 
 class ControllerInputHandler:
-    def __init__(self, controller_mapping=None):
-        self.cp = control_port.ControlPort()
+    def __init__(self, controller_mapping=None, hosts_and_ports: list[tuple[str, int]] | None = None):
+        self.cp = control_port.ControlPort(hosts_and_ports=hosts_and_ports)
         self.controllers = {}  # Maps controller_id to (controller_state, player_id)
         self.active_controllers = []  # List of active controller states
         self._lock = threading.Lock()
@@ -170,40 +170,26 @@ class ControllerInputHandler:
         """Runs in the asyncio thread to initialize and start listening."""
         print("Enumerating controllers...")
         try:
-            controllers = await self.cp.enumerate(timeout=5.0)
-            if not controllers:
-                print("No controllers found.")
+            discovered_controller_states = await self.cp.enumerate(timeout=5.0)
+            
+            if not discovered_controller_states:
+                print("ControllerInputHandler: No controllers found/returned by ControlPort.enumerate.")
                 self.initialized = False
+                self.init_event.set()
                 return
 
-            # Sort controllers by DIP switch ID
-            sorted_controllers = sorted(
-                [(ip, state) for ip, state in controllers.items()],
-                key=lambda x: x[1].dip
-            )
-
-            # Assign roles to controllers based on mapping
-            for ip, state in sorted_controllers:
-                if state.dip in self.controller_mapping:
-                    player_id = self.controller_mapping[state.dip]
-                    if await state.connect():
-                        print(f"Connected to controller {ip} (DIP: {state.dip}) as {player_id.name}")
-                        # Clear the LCD on first connect
-                        await state.clear_lcd()
-                        self.controllers[state.dip] = (state, player_id)
-                        self.active_controllers.append(state)
-                        # Register button callback with controller ID
-                        state.register_button_callback(
-                            lambda buttons, cid=state.dip: self._button_callback(buttons, cid)
-                        )
-                        # Start listening task for this controller
-                        self._listen_tasks[state.dip] = self.loop.create_task(state._listen_buttons())
-                        self.select_hold_data[state.dip] = {'start_time': 0, 'is_counting_down': False}
-                    else:
-                        print(f"Failed to connect to controller {ip}")
+            connect_tasks = []
+            for ip, state_from_cp in discovered_controller_states.items():
+                if state_from_cp.dip in self.controller_mapping:
+                    player_id = self.controller_mapping[state_from_cp.dip]
+                    print(f"ControllerInputHandler: Attempting to connect and register discovered/queried controller DIP {state_from_cp.dip} ({ip}:{state_from_cp.port}) as {player_id.name}")
+                    connect_tasks.append(self._connect_and_register(state_from_cp, player_id))
                 else:
-                    print(f"Controller {ip} (DIP: {state.dip}) not assigned - no mapping found")
-
+                    print(f"ControllerInputHandler: Discovered/queried controller {ip}:{state_from_cp.port} (DIP: {state_from_cp.dip}) not assigned a role in mapping. Skipping.")
+            
+            if connect_tasks:
+                results = await asyncio.gather(*connect_tasks, return_exceptions=True)
+            
             self.initialized = len(self.controllers) > 0
 
         except Exception as e:
@@ -211,6 +197,27 @@ class ControllerInputHandler:
             self.initialized = False
         finally:
             self.init_event.set()
+
+    async def _connect_and_register(self, controller_state_instance: control_port.ControllerState, player_id):
+        """Helper to connect a single controller (given as ControllerState instance) and register callback."""
+        dip = controller_state_instance.dip
+
+        if not controller_state_instance._connected:
+            if not await controller_state_instance.connect():
+                return
+        
+        print(f"ControllerInputHandler: Successfully connected/verified controller DIP {dip} ({player_id.name})")
+        
+        self.controllers[dip] = (controller_state_instance, player_id)
+        if controller_state_instance not in self.active_controllers:
+            self.active_controllers.append(controller_state_instance)
+        
+        controller_state_instance.register_button_callback(
+            lambda buttons, controller_dip=dip: self._button_callback(buttons, controller_dip)
+        )
+
+        self.select_hold_data[dip] = {'start_time': 0, 'is_counting_down': False}
+        self.last_button_states[dip] = [False] * 5
 
     def _button_callback(self, buttons, controller_id):
         """Called from the asyncio thread when a controller's buttons change."""
