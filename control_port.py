@@ -295,7 +295,7 @@ class ControlPort:
                 print(f"Host {ip} is reachable")
                 # Check if the port is open
                 if await self.check_port(ip, port):
-                    reachable_hosts_and_ports.append(host_and_port)
+                    reachable_hosts_and_ports.append((ip, port))
             else:
                 print(f"Host {ip} is not reachable")
         return reachable_hosts_and_ports
@@ -309,9 +309,11 @@ class ControlPort:
 
         # Then try to enumerate only the reachable hosts
         tasks = []
-        for host_and_port in reachable_hosts_and_ports:
-            ip, port = host_and_port
-            tasks.append(self._query_controller(ip, port, timeout / 2))
+        print(f"DEBUG: ControlPort.enumerate: reachable_hosts_and_ports = {reachable_hosts_and_ports}")
+        for host_and_port_tuple in reachable_hosts_and_ports:
+            ip_addr, port_num = host_and_port_tuple
+            print(f"DEBUG: ControlPort.enumerate: Creating task for _query_controller with ip={ip_addr}, port={port_num}")
+            tasks.append(self._query_controller(ip_addr, port_num, timeout / 2))
 
         try:
             results = await asyncio.wait_for(asyncio.gather(*tasks), timeout=timeout)
@@ -322,7 +324,7 @@ class ControlPort:
         for result in results:
             if result:
                 ip, port, dip = result
-                self.controllers[ip] = ControllerState(ip, dip, port)
+                self.controllers[dip] = ControllerState(ip, dip, port)
         return self.controllers
 
     async def _query_controller(self, ip, port, timeout):
