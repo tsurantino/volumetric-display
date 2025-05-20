@@ -137,13 +137,13 @@ class Cannon:
 
 class SphereShooterGame(BaseGame):
     def __init__(self, width=20, height=20, length=20, frameRate=30, input_handler_type='controller', config=None):
-        super().__init__(width, height, length, frameRate, input_handler_type, config)
-        self.spheres: List[Sphere] = []
-        self.cannons: Dict[PlayerID, Cannon] = {}
         self.team_colors = {
             TeamID.BLUE: RGB(0, 0, 255),    # Blue team
             TeamID.ORANGE: RGB(255, 165, 0)  # Orange team
         }
+        super().__init__(width, height, length, frameRate, input_handler_type, config)
+        self.spheres: List[Sphere] = []
+        self.cannons: Dict[PlayerID, Cannon] = {}
         self.reset_game()
 
     def reset_game(self):
@@ -322,12 +322,34 @@ class SphereShooterGame(BaseGame):
         """Render the game state to the raster."""
         # Draw spheres
         for sphere in self.spheres:
-            # Draw sphere with simple point rendering
-            x, y, z = int(sphere.x), int(sphere.y), int(sphere.z)
-            if (0 <= x < self.width and 
-                0 <= y < self.height and 
-                0 <= z < self.length):
-                raster.set_pix(x, y, z, sphere.color)
+            # Determine the bounding box for the sphere
+            min_x = math.floor(sphere.x - sphere.radius)
+            max_x = math.ceil(sphere.x + sphere.radius)
+            min_y = math.floor(sphere.y - sphere.radius)
+            max_y = math.ceil(sphere.y + sphere.radius)
+            min_z = math.floor(sphere.z - sphere.radius)
+            max_z = math.ceil(sphere.z + sphere.radius)
+
+            for vx in range(min_x, max_x + 1):
+                for vy in range(min_y, max_y + 1):
+                    for vz in range(min_z, max_z + 1):
+                        # Voxel center
+                        voxel_center_x = vx + 0.5
+                        voxel_center_y = vy + 0.5
+                        voxel_center_z = vz + 0.5
+
+                        # Distance from voxel center to sphere center
+                        dist_sq = (
+                            (voxel_center_x - sphere.x)**2 +
+                            (voxel_center_y - sphere.y)**2 +
+                            (voxel_center_z - sphere.z)**2
+                        )
+
+                        if dist_sq <= sphere.radius**2:
+                            if (0 <= vx < self.width and 
+                                0 <= vy < self.height and 
+                                0 <= vz < self.length):
+                                raster.set_pix(vx, vy, vz, sphere.color)
 
         # Draw cannons
         for cannon in self.cannons.values():

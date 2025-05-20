@@ -168,9 +168,11 @@ class ControllerInputHandler:
 
     async def _async_initialize_and_listen(self):
         """Runs in the asyncio thread to initialize and start listening."""
-        print("Enumerating controllers...")
+        print("ControllerInputHandler: Starting async initialization...")
         try:
+            print("ControllerInputHandler: Calling cp.enumerate()...")
             discovered_controller_states = await self.cp.enumerate(timeout=5.0)
+            print(f"ControllerInputHandler: cp.enumerate() returned: {discovered_controller_states}")
             
             if not discovered_controller_states:
                 print("ControllerInputHandler: No controllers found/returned by ControlPort.enumerate.")
@@ -179,21 +181,29 @@ class ControllerInputHandler:
                 return
 
             connect_tasks = []
-            for ip, state_from_cp in discovered_controller_states.items():
+            print(f"ControllerInputHandler: Iterating discovered_controller_states items...")
+            for dip_key, state_from_cp in discovered_controller_states.items():
+                print(f"ControllerInputHandler: Processing discovered_controller_states item: dip_key={dip_key}, state_from_cp={state_from_cp}")
                 if state_from_cp.dip in self.controller_mapping:
                     player_id = self.controller_mapping[state_from_cp.dip]
-                    print(f"ControllerInputHandler: Attempting to connect and register discovered/queried controller DIP {state_from_cp.dip} ({ip}:{state_from_cp.port}) as {player_id.name}")
+                    print(f"ControllerInputHandler: Controller DIP {state_from_cp.dip} maps to player_id={player_id}. Creating connect task.")
                     connect_tasks.append(self._connect_and_register(state_from_cp, player_id))
                 else:
-                    print(f"ControllerInputHandler: Discovered/queried controller {ip}:{state_from_cp.port} (DIP: {state_from_cp.dip}) not assigned a role in mapping. Skipping.")
+                    print(f"ControllerInputHandler: Discovered/queried controller {state_from_cp.ip}:{state_from_cp.port} (DIP: {state_from_cp.dip}) not assigned a role in mapping. Skipping.")
             
+            print(f"ControllerInputHandler: Built connect_tasks list: {connect_tasks}")
             if connect_tasks:
+                print(f"ControllerInputHandler: Calling asyncio.gather for {len(connect_tasks)} tasks...")
                 results = await asyncio.gather(*connect_tasks, return_exceptions=True)
+                print(f"ControllerInputHandler: asyncio.gather results: {results}")
             
             self.initialized = len(self.controllers) > 0
+            print(f"ControllerInputHandler: Initialization complete. self.initialized = {self.initialized}, self.controllers = {self.controllers}")
 
         except Exception as e:
-            print(f"Error during controller async initialization: {e}")
+            print(f"Error during controller async initialization: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
             self.initialized = False
         finally:
             self.init_event.set()

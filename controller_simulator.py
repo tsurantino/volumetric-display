@@ -315,10 +315,12 @@ class ControllerSimulator:
 
     # --- Methods for TCP Server Interaction (Thread-safe) ---
 
-    def set_lcd_line(self, dip: int, line_idx: int, text: str):
-         if dip in self.controllers and 0 <= line_idx < LCD_CHAR_HEIGHT:
+    def set_lcd_line(self, dip: int, x: int, y: int, text: str):
+         if dip in self.controllers and 0 <= x < LCD_WIDTH and 0 <= y < LCD_HEIGHT:
             with self._lock:
-                 self.controllers[dip].lcd_lines[line_idx] = text
+                 lcd_lines = self.controllers[dip].lcd_lines
+                 text_to_write = text[:LCD_WIDTH - x]
+                 lcd_lines[y] = lcd_lines[y][:x] + text_to_write + lcd_lines[y][LCD_WIDTH - x - len(text_to_write):]
 
     def clear_lcd(self, dip: int):
         if dip in self.controllers:
@@ -400,7 +402,7 @@ class ControllerSimulator:
                             y = int(parts[2])
                             text = parts[3]
                             # Update shared state (thread-safe)
-                            self.set_lcd_line(dip, y, text[x:]) # Simple implementation assumes writing from x to end
+                            self.set_lcd_line(dip, x, y, text)
                         except (ValueError, IndexError) as e:
                             print(f"Error parsing LCD command for DIP {dip}: {line_str} - {e}")
                     elif command == "lcd" and parts[1] == "clear":
