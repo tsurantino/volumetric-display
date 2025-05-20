@@ -116,7 +116,7 @@ class ControllerSimulator:
                         dip=dip,
                         port=port,
                         buttons=[False] * 5,
-                        lcd_lines=["" for _ in range(LCD_CHAR_HEIGHT)],
+                        lcd_lines=[" " * LCD_CHAR_WIDTH for _ in range(LCD_CHAR_HEIGHT)],
                         last_button_sent=[False] * 5 # Initialize last sent state
                     )
         except FileNotFoundError:
@@ -316,17 +316,17 @@ class ControllerSimulator:
     # --- Methods for TCP Server Interaction (Thread-safe) ---
 
     def set_lcd_line(self, dip: int, x: int, y: int, text: str):
-         if dip in self.controllers and 0 <= x < LCD_WIDTH and 0 <= y < LCD_HEIGHT:
+         if dip in self.controllers and 0 <= x < LCD_CHAR_WIDTH and 0 <= y < LCD_CHAR_HEIGHT:
             with self._lock:
                  lcd_lines = self.controllers[dip].lcd_lines
-                 text_to_write = text[:LCD_WIDTH - x]
-                 lcd_lines[y] = lcd_lines[y][:x] + text_to_write + lcd_lines[y][LCD_WIDTH - x - len(text_to_write):]
+                 text_to_write = text[:LCD_CHAR_WIDTH - x]
+                 lcd_lines[y] = lcd_lines[y][:x] + text_to_write + lcd_lines[y][x + len(text_to_write):]
 
     def clear_lcd(self, dip: int):
         if dip in self.controllers:
             with self._lock:
                  for i in range(LCD_CHAR_HEIGHT):
-                     self.controllers[dip].lcd_lines[i] = "" * LCD_CHAR_WIDTH
+                     self.controllers[dip].lcd_lines[i] = " " * LCD_CHAR_WIDTH
 
     async def send_button_update(self, dip: int):
          if dip not in self.controllers: return
@@ -385,10 +385,10 @@ class ControllerSimulator:
 
                 while b'\n' in buffer:
                     line, buffer = buffer.split(b'\n', 1)
-                    line_str = line.strip().decode()
+                    line_str = line.decode()
                     if not line_str: continue
 
-                    print(f"Received from DIP {dip}: {line_str}") # Debug
+                    print(f"Received from DIP {dip}: '{line_str}'") # Debug
                     parts = line_str.split(':')
                     command = parts[0]
 
