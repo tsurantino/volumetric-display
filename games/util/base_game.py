@@ -1,4 +1,4 @@
-from artnet import Scene, RGB
+from artnet import Scene, RGB, HSV
 from games.util.game_util import ControllerInputHandler, DisplayManager, Button, Direction, ButtonState
 import time
 import random

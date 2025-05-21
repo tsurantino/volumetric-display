@@ -1,7 +1,8 @@
-from games.util.base_game import BaseGame, PlayerID, TeamID, Difficulty, RGB
+from games.util.base_game import BaseGame, PlayerID, TeamID, Difficulty, RGB, HSV
 from collections import deque
 import random
 import time
+import math
 from games.util.game_util import Button, Direction, ButtonState
 
 # Configuration mapping player roles to their team and view orientation
@@ -84,7 +85,7 @@ class SnakeGame(BaseGame):
         }
         self.last_step_time = 0  # Track last game step update
         self.step_rate = 3  # Default to 3 steps per second (MEDIUM/HARD)
-        self.max_score = 1
+        self.max_score = 9
         
         # Menu-related attributes
         self.menu_active = True
@@ -104,13 +105,13 @@ class SnakeGame(BaseGame):
     def reset_game(self):
         """Reset the game state."""
         # Initialize blue snake
-        blue_start = (self.width//8, self.length//4, self.height//4)
+        blue_start = (self.width//8, self.length*3//8, self.height//4)
         self.snakes = {
             TeamID.BLUE: SnakeData('blue', RGB(255, 0, 0), blue_start, (1, 0, 0))
         }
 
         # Initialize orange snake
-        orange_start = (3*self.width//8, self.length//4, self.height//4)
+        orange_start = (3*self.width//8, self.length//8, self.height//4)
         self.snakes[TeamID.ORANGE] = SnakeData('orange',RGB(255, 165, 0), orange_start, (-1, 0, 0))
 
         # Set initial lengths
@@ -142,7 +143,7 @@ class SnakeGame(BaseGame):
 
     def get_player_score(self, player_id):
         """Get the score for a player."""
-        return len(self.snakes[PLAYER_CONFIG[player_id]['team']].body)
+        return self.snakes[PLAYER_CONFIG[player_id]['team']].score
 
     def get_opponent_score(self, player_id):
         """Get the score for a player's opponent."""
@@ -154,7 +155,7 @@ class SnakeGame(BaseGame):
         total_score = 0
         for team_id, snake in self.snakes.items():
             if team_id == opponent_team:
-                total_score += len(snake.body)
+                total_score += snake.score
         return total_score
 
     def select_difficulty(self):
@@ -614,7 +615,7 @@ class SnakeGame(BaseGame):
             snake.length += 1
             snake.score += 1  # Increment score when eating an apple
             # Create explosion effect at apple position
-            self.explosions.append(RainbowExplosion(self.apple, self.last_update_time))
+            self.explosions.append(RainbowExplosion(self.apple, time.monotonic()))
             self.place_new_apple()
 
         return True
