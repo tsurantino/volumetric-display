@@ -14,7 +14,7 @@ except ImportError:
     GameScene = None # Fallback if import fails, to avoid crashing if files are temporarily unavailable
 
 try:
-    from base_game import BaseGame, Difficulty # Import Difficulty for BaseGame countdown screen
+    from games.util.base_game import BaseGame, Difficulty # Import Difficulty for BaseGame countdown screen
 except ImportError:
     BaseGame = None
     Difficulty = None # Fallback
@@ -25,6 +25,12 @@ class Button(Enum):
     DOWN = 2
     RIGHT = 3
     SELECT = 4
+
+class ButtonState(Enum):
+    """Enum representing button state events."""
+    PRESSED = 0   # Button was just pressed (down event)
+    RELEASED = 1  # Button was just released (up event)
+    HELD = 2      # Button is being held down
 
 class Direction(Enum):
     LEFT = 1
@@ -55,8 +61,6 @@ class DisplayManager:
             game_state_class_name = None
             if hasattr(game_state, '__class__') and hasattr(game_state.__class__, '__name__'):
                 game_state_class_name = game_state.__class__.__name__
-
-            print("Current game state class name:", game_state_class_name)
 
             if game_state_class_name == 'GameScene':
                 # Handling display for GameScene (Game Selection Menu & Countdown)
@@ -242,6 +246,32 @@ class ControllerInputHandler:
         self.menu_votes = {}  # Maps controller_id to their game vote
         self.voting_states = {}  # Maps controller_id to whether they have voted
         self.controller_mapping = controller_mapping or {}
+        
+        # New callback system
+        self.button_callbacks = {}  # Maps controller_id to callback function
+
+    def register_button_callback(self, controller_id, callback):
+        """Register a callback for button events.
+        
+        The callback should have the signature:
+        callback(player_id, button, button_state)
+        
+        Where:
+        - player_id is the PlayerID enum
+        - button is the Button enum
+        - button_state is the ButtonState enum (PRESSED, RELEASED, HELD)
+        """
+        if controller_id in self.controllers:
+            self.button_callbacks[controller_id] = callback
+            return True
+        return False
+
+    def unregister_button_callback(self, controller_id):
+        """Unregister a callback for button events."""
+        if controller_id in self.button_callbacks:
+            del self.button_callbacks[controller_id]
+            return True
+        return False
 
     async def _async_initialize_and_listen(self):
         """Runs in the asyncio thread to initialize and start listening."""
@@ -312,53 +342,66 @@ class ControllerInputHandler:
             return
 
         controller_state, player_id = self.controllers[controller_id]
+        last_buttons = self.last_button_states.get(controller_id, [False] * 5)
 
-        # Handle SELECT button for menu selection
-        if buttons[Button.SELECT.value]:  # SELECT pressed
-            if not self.select_hold_data[controller_id]['is_counting_down']:
-                self.select_hold_data[controller_id] = {
-                    'start_time': time.monotonic(),
-                    'is_counting_down': True
-                }
-        else:  # SELECT released
-            if self.select_hold_data[controller_id]['is_counting_down']:
-                # If held for less than 1 second, treat as menu selection
-                if time.monotonic() - self.select_hold_data[controller_id]['start_time'] < 1.0:
-                    with self._lock:
-                        self.event_queue.append((player_id, Button.SELECT))
-            self.select_hold_data[controller_id]['is_counting_down'] = False
-
-        # Handle directional buttons
-        button_to_direction = {
-            Button.UP: Direction.UP,
-            Button.LEFT: Direction.LEFT,
-            Button.DOWN: Direction.DOWN,
-            Button.RIGHT: Direction.RIGHT
-        }
-
-        # Check each directional button and queue the corresponding direction
-        for button in [Button.UP, Button.LEFT, Button.DOWN, Button.RIGHT]:
-            if buttons[button.value] and not self.last_button_states.get(controller_id, [False] * 5)[button.value]:
+        # Process each button to determine state changes
+        for button in Button:
+            button_idx = button.value
+            
+            # Check for button state changes
+            if buttons[button_idx] and not last_buttons[button_idx]:
+                # Button was just pressed
+                self._handle_button_event(controller_id, player_id, button, ButtonState.PRESSED)
+                
+                # For SELECT button, also track press time for hold detection
+                if button == Button.SELECT:
+                    self.select_hold_data[controller_id] = {
+                        'start_time': time.monotonic(),
+                        'is_counting_down': True
+                    }
+                
+                # Add to event queue with button state
                 with self._lock:
-                    self.event_queue.append((player_id, button_to_direction[button]))
-
-        # Handle UP/DOWN for menu navigation
-        current_time = time.monotonic()
-        if current_time - self.menu_selection_time > 0.2:  # Debounce menu selection
-            if buttons[Button.UP.value] and not self.last_button_states.get(controller_id, [False] * 5)[Button.UP.value]:
+                    self.event_queue.append((player_id, button, ButtonState.PRESSED))
+            
+            elif not buttons[button_idx] and last_buttons[button_idx]:
+                # Button was just released
+                self._handle_button_event(controller_id, player_id, button, ButtonState.RELEASED)
+                
+                # For SELECT button, check for press-and-release (click) event
+                if button == Button.SELECT:
+                    hold_time = time.monotonic() - self.select_hold_data[controller_id]['start_time']
+                    self.select_hold_data[controller_id]['is_counting_down'] = False
+                
+                # Add to event queue with button state
                 with self._lock:
-                    self.event_queue.append((player_id, Button.UP))
-                self.menu_selection_time = current_time
-            elif buttons[Button.DOWN.value] and not self.last_button_states.get(controller_id, [False] * 5)[Button.DOWN.value]:
-                with self._lock:
-                    self.event_queue.append((player_id, Button.DOWN))
-                self.menu_selection_time = current_time
+                    self.event_queue.append((player_id, button, ButtonState.RELEASED))
+            
+            elif buttons[button_idx]:
+                # Button is being held down
+                self._handle_button_event(controller_id, player_id, button, ButtonState.HELD)
+                
+                # We don't add HELD events to the queue to avoid flooding it
 
         # Store the new state
         self.last_button_states[controller_id] = list(buttons)
 
+    def _handle_button_event(self, controller_id, player_id, button, button_state):
+        """Process a button event and call the registered callback if any."""
+        # Invoke the callback if registered
+        if controller_id in self.button_callbacks:
+            try:
+                callback = self.button_callbacks[controller_id]
+                callback(player_id, button, button_state)
+            except Exception as e:
+                print(f"Error in button callback for controller {controller_id}: {e}")
+
     def get_direction_key(self):
-        """Called from the main game thread to get the next input event."""
+        """Called from the main game thread to get the next input event.
+        
+        Returns:
+            tuple or None: A tuple containing (player_id, button, button_state) or None if no events
+        """
         if not self.initialized:
             return None
 
@@ -384,7 +427,6 @@ class ControllerInputHandler:
     def clear_menu_votes(self):
         """Clear all menu votes and selections."""
         self.menu_votes.clear()
-        self.menu_selections.clear()
         self.voting_states.clear()
 
     def start_initialization(self):

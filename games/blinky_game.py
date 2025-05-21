@@ -1,5 +1,5 @@
-from base_game import BaseGame, PlayerID, TeamID, Difficulty, RGB
-from game_util import Button
+from games.util.base_game import BaseGame, PlayerID, TeamID, Difficulty, RGB
+from games.util.game_util import Button
 import random
 import time
 

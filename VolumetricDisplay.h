@@ -22,7 +22,7 @@ class VolumetricDisplay {
 public:
   VolumetricDisplay(int width, int height, int length, const std::string &ip,
                     int port, int universes_per_layer, int layer_span,
-                    float alpha, const glm::vec3 &initial_rotation_rate);
+                    float alpha, const glm::vec3 &initial_rotation_rate, bool color_correction_enabled);
   ~VolumetricDisplay();
 
   void run();
@@ -87,6 +87,7 @@ private:
   boost::asio::io_service io_service;
   boost::asio::ip::udp::socket socket;
 
+  bool color_correction_enabled_;
   util::ReverseColorCorrector<3> color_corrector_{
       util::kColorCorrectorWs2812bOptions};
 };

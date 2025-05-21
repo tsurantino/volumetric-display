@@ -1,5 +1,5 @@
 from artnet import Scene, RGB
-from game_util import ControllerInputHandler, DisplayManager, Button, Direction
+from games.util.game_util import ControllerInputHandler, DisplayManager, Button, Direction, ButtonState
 import time
 import random
 from enum import Enum
@@ -93,7 +93,37 @@ class BaseGame:
         self.countdown_value = None
         self.difficulty = None
 
+        # Register button callbacks for all controllers if input_handler is provided
+        if self.input_handler and isinstance(self.input_handler, ControllerInputHandler):
+            for controller_id in self.input_handler.controllers:
+                self.input_handler.register_button_callback(controller_id, self.handle_button_event)
+
         self.reset_game()
+
+    def handle_button_event(self, player_id, button, button_state):
+        """Handle button events with state information.
+        
+        This is the new callback-based approach that provides both press and release events.
+        Games should override this method to handle button events.
+        
+        Args:
+            player_id: PlayerID enum value
+            button: Button enum value
+            button_state: ButtonState enum value (PRESSED, RELEASED, HELD)
+        """
+        # Default implementation that routes to the old-style methods for backward compatibility
+        if self.menu_active:
+            # In menu mode, handle menu input
+            if button_state == ButtonState.PRESSED:
+                if button == Button.UP:
+                    self.process_menu_input(player_id, Button.UP)
+                elif button == Button.DOWN:
+                    self.process_menu_input(player_id, Button.DOWN)
+                elif button == Button.SELECT:
+                    self.process_menu_input(player_id, Button.SELECT)
+        else:
+            # In game mode, directly pass all button events to process_player_input
+            self.process_player_input(player_id, button, button_state)
 
     def get_player_config(self, player_id):
         """Get the configuration for a player."""
@@ -111,9 +141,22 @@ class BaseGame:
         """Reset the game state."""
         raise NotImplementedError("Subclasses must implement reset_game")
 
-    def process_player_input(self, player_id, action):
-        """Process input from a player."""
+    def process_player_input(self, player_id, button, button_state):
+        """Process input from a player.
+        
+        Args:
+            player_id: PlayerID enum value
+            button: Button enum value (UP, DOWN, LEFT, RIGHT, SELECT)
+            button_state: ButtonState enum value (PRESSED, RELEASED, HELD)
+        """
         raise NotImplementedError("Subclasses must implement process_player_input")
+
+    def process_menu_input(self, player_id, action):
+        """Process menu input from a player.
+        This is used for game-specific menus, not the game selection menu.
+        """
+        # Default implementation does nothing
+        pass
 
     def update_game_state(self):
         """Update the game state."""
@@ -127,4 +170,8 @@ class BaseGame:
         """Clean up resources."""
         print("Cleaning up game...")
         if isinstance(self.input_handler, ControllerInputHandler):
+            # Unregister callbacks
+            for controller_id in self.input_handler.controllers:
+                self.input_handler.unregister_button_callback(controller_id)
+            # Stop the input handler
             self.input_handler.stop() 

@@ -1,5 +1,5 @@
-from base_game import BaseGame, PlayerID, TeamID, Difficulty, RGB
-from game_util import Button
+from games.util.base_game import BaseGame, PlayerID, TeamID, Difficulty, RGB
+from games.util.game_util import Button, ButtonState
 import random
 import math
 import time
@@ -22,7 +22,7 @@ class Sphere:
     team: TeamID  # Track which team shot this sphere
 
     # Physics constants
-    GRAVITY = 20.0  # Gravity acceleration
+    GRAVITY = 1000.0  # Gravity acceleration
     ELASTICITY = 0.95  # Bounce elasticity (1.0 = perfect bounce)
     AIR_DAMPING = 0.999  # Air resistance (velocity multiplier per update)
     GROUND_FRICTION = 0.95  # Additional friction when touching ground
@@ -30,7 +30,7 @@ class Sphere:
 
     def update(self, dt: float, bounds: tuple[float, float, float]):
         # Apply gravity
-        self.vy -= self.GRAVITY * dt
+        self.vz -= self.GRAVITY * dt
 
         # Apply air resistance
         self.vx *= self.AIR_DAMPING
@@ -134,6 +134,7 @@ class Cannon:
     color: RGB
     select_hold_start: float = None  # When SELECT was pressed
     radius: float = 1.0
+    charging: bool = False  # Whether the cannon is charging
 
 class SphereShooterGame(BaseGame):
     def __init__(self, width=20, height=20, length=20, frameRate=30, config=None, input_handler=None):
@@ -191,51 +192,58 @@ class SphereShooterGame(BaseGame):
         opponent_team = TeamID.ORANGE if team == TeamID.BLUE else TeamID.BLUE
         return sum(1 for sphere in self.spheres if sphere.team == opponent_team)
 
-    def process_player_input(self, player_id, action):
+    def process_player_input(self, player_id, button, button_state):
         """Process input from a player."""
-        if self.game_over_active:
+        if self.game_over_active or player_id not in self.cannons:
             return
 
         cannon = self.cannons[player_id]
-        move_speed = 1.0
-
-        # Handle movement
-        if action == Button.UP:
-            if cannon.face in ['x', '-x']:
-                cannon.y = max(cannon.radius, min(self.length - 1 - cannon.radius, cannon.y - move_speed))
-            else:  # 'y' or '-y' face
-                cannon.y = max(cannon.radius, min(self.length - 1 - cannon.radius, cannon.y - move_speed))
-        elif action == Button.DOWN:
-            if cannon.face in ['x', '-x']:
-                cannon.y = max(cannon.radius, min(self.length - 1 - cannon.radius, cannon.y + move_speed))
-            else:  # 'y' or '-y' face
-                cannon.y = max(cannon.radius, min(self.length - 1 - cannon.radius, cannon.y + move_speed))
-        elif action == Button.LEFT:
-            if cannon.face in ['x', '-x']:
-                cannon.x = max(cannon.radius, min(self.height - 1 - cannon.radius, cannon.x - move_speed))
-            else:  # 'y' or '-y' face
-                cannon.x = max(cannon.radius, min(self.width - 1 - cannon.radius, cannon.x - move_speed))
-        elif action == Button.RIGHT:
-            if cannon.face in ['x', '-x']:
-                cannon.x = max(cannon.radius, min(self.height - 1 - cannon.radius, cannon.x + move_speed))
-            else:  # 'y' or '-y' face
-                cannon.x = max(cannon.radius, min(self.width - 1 - cannon.radius, cannon.x + move_speed))
-        elif action == Button.SELECT:
-            # Start charging the shot
-            if not cannon.select_hold_start:
+        
+        # Handle SELECT button (charging and firing)
+        if button == Button.SELECT:
+            if button_state == ButtonState.PRESSED:
+                # Start charging when SELECT is pressed
                 cannon.select_hold_start = time.monotonic()
+                cannon.charging = True
+            elif button_state == ButtonState.RELEASED and cannon.charging:
+                # Fire the shot when SELECT is released
+                if cannon.select_hold_start is not None:
+                    charge_time = time.monotonic() - cannon.select_hold_start
+                    self.launch_sphere(cannon, charge_time)
+                # Reset charging state
+                cannon.select_hold_start = None
+                cannon.charging = False
+            return
+        
+        # Only handle directional movement on button press
+        if button_state != ButtonState.PRESSED:
+            return
+            
+        move_speed = 1.0
+        
+        # Handle movement
+        new_x = cannon.x
+        if button == Button.DOWN:
+            cannon.y = max(cannon.radius, min(self.length - 1 - cannon.radius, cannon.y - move_speed))
+        elif button == Button.UP:
+            cannon.y = max(cannon.radius, min(self.length - 1 - cannon.radius, cannon.y + move_speed))
+        elif button == Button.LEFT:
+            if cannon.face in ['x', '-y']:
+                new_x = cannon.x + move_speed
+            else:
+                new_x = cannon.x - move_speed
+        elif button == Button.RIGHT:
+            if cannon.face in ['x', '-y']:
+                new_x = cannon.x - move_speed
+            else:
+                new_x = cannon.x + move_speed
+        cannon.x = max(cannon.radius, min(self.height - 1 - cannon.radius, new_x))
 
     def update_game_state(self):
         """Update the game state."""
         current_time = time.monotonic()
 
-        # Check for sphere launches (when SELECT is released)
-        for player_id, cannon in self.cannons.items():
-            if cannon.select_hold_start is not None:
-                hold_duration = current_time - cannon.select_hold_start
-                if hold_duration >= 3.0:  # Maximum charge time
-                    self.launch_sphere(cannon, 3.0)
-                    cannon.select_hold_start = None
+        # Removed the auto-firing mechanic since we now handle firing on button release
 
         # Update sphere physics
         bounds = (self.width, self.height, self.length)
@@ -265,8 +273,8 @@ class SphereShooterGame(BaseGame):
     def launch_sphere(self, cannon: Cannon, charge_time: float):
         """Launch a sphere from a cannon."""
         # Calculate velocity based on charge time (1-3 seconds)
-        base_speed = 10.0  # Base speed
-        max_speed = 30.0   # Maximum speed
+        base_speed = 50.0  # Base speed
+        max_speed = 500.0   # Maximum speed
         speed = base_speed + (max_speed - base_speed) * min(charge_time / 3.0, 1.0)
 
         # Set initial position based on cannon face
@@ -309,7 +317,7 @@ class SphereShooterGame(BaseGame):
         sphere = Sphere(
             x=x, y=y, z=z,
             vx=vx, vy=vy, vz=vz,
-            radius=1.0,
+            radius=3.0,
             birth_time=time.monotonic(),
             lifetime=30.0,  # Spheres last 30 seconds
             color=cannon.color,
@@ -345,7 +353,7 @@ class SphereShooterGame(BaseGame):
                             (voxel_center_z - sphere.z)**2
                         )
 
-                        if dist_sq <= sphere.radius**2:
+                        if int(dist_sq) == int(sphere.radius**2):
                             if (0 <= vx < self.width and 
                                 0 <= vy < self.height and 
                                 0 <= vz < self.length):
@@ -355,14 +363,23 @@ class SphereShooterGame(BaseGame):
         for cannon in self.cannons.values():
             # Calculate cannon color based on charge
             color = cannon.color
-            if cannon.select_hold_start:
+            if cannon.charging and cannon.select_hold_start:
                 # Make cannon pulse while charging
                 charge_time = time.monotonic() - cannon.select_hold_start
-                pulse = (math.sin(charge_time * 10) + 1) / 2  # 0 to 1 pulsing
+                charge_percentage = min(1.0, charge_time / 3.0)  # 0-100% based on 3 second max charge
+                
+                # Pulse faster as charge increases
+                pulse_speed = 5 + charge_percentage * 15  # 5-20 Hz based on charge
+                pulse = (math.sin(charge_time * pulse_speed) + 1) / 2  # 0 to 1 pulsing
+                
+                # Increase brightness based on charge percentage
+                brightness = 1.0 + charge_percentage * 1.5  # 100-250% brightness based on charge
+                
+                # Apply pulse and charge effects
                 color = RGB(
-                    min(255, int(color.red * (1 + pulse))),
-                    min(255, int(color.green * (1 + pulse))),
-                    min(255, int(color.blue * (1 + pulse)))
+                    min(255, int(color.red * brightness * (1 + pulse * 0.5))),
+                    min(255, int(color.green * brightness * (1 + pulse * 0.5))),
+                    min(255, int(color.blue * brightness * (1 + pulse * 0.5)))
                 )
 
             # Draw cannon on its face

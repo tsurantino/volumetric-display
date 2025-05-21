@@ -142,7 +142,7 @@ def main():
         scene = load_scene(args.scene, config=config) if args.scene else create_default_scene()
     except (ImportError, ValueError) as e:
         print(f"Error loading scene: {e}")
-        return
+        raise e
 
     start_time = time.monotonic()
     print("🚀 Starting ArtNet DMX Transmission with Sync...")

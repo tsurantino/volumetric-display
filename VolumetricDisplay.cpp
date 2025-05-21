@@ -20,12 +20,13 @@ VolumetricDisplay::VolumetricDisplay(int width, int height, int length,
                                      const std::string &ip, int port,
                                      int universes_per_layer, int layer_span,
                                      float alpha,
-                                     const glm::vec3 &initial_rotation_rate)
+                                     const glm::vec3 &initial_rotation_rate, bool color_correction_enabled)
     : left_mouse_button_pressed(false), right_mouse_button_pressed(false),
       width(width), height(height), length(length), ip(ip), port(port),
       universes_per_layer(universes_per_layer), layer_span(layer_span),
       alpha(alpha), rotation_rate(initial_rotation_rate), show_axis(false),
       show_wireframe(false), needs_update(false),
+      color_correction_enabled_(color_correction_enabled),
       socket(io_service, boost::asio::ip::udp::endpoint(
                              boost::asio::ip::address::from_string(ip), port)) {
 
@@ -149,6 +150,7 @@ void VolumetricDisplay::setupOpenGL() {
   glEnable(GL_COLOR_MATERIAL);
   glEnable(GL_BLEND);
   glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+  glDepthMask(GL_TRUE);
   glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE);
 
   const GLfloat kLightColor[] = {1.0f, 1.0f, 1.0f, 1.0f};
@@ -313,7 +315,9 @@ void VolumetricDisplay::updateColors() {
   view_update.wait_for(lg, std::chrono::milliseconds(100));
 
   for (auto pixel : pixels) {
-    color_corrector_.ReverseCorrectInPlace(pixel.data());
+    if (color_correction_enabled_) {
+      color_corrector_.ReverseCorrectInPlace(pixel.data());
+    }
     GLfloat r = pixel[0] / 255.0f;
     GLfloat g = pixel[1] / 255.0f;
     GLfloat b = pixel[2] / 255.0f;

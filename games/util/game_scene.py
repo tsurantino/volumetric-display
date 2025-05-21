@@ -1,5 +1,5 @@
 from artnet import Scene, RGB
-from games.util.game_util import ControllerInputHandler, DisplayManager, Button, Direction, ButtonState
+from game_util import ControllerInputHandler, DisplayManager, Button, Direction
 import time
 import random
 from enum import Enum
@@ -27,9 +27,9 @@ class GameScene(Scene):
         # Store controller mapping from config
         self.controller_mapping = {}
         if config and 'scene' in config and '3d_snake' in config['scene']:
-            self.scene_config = config['scene']['3d_snake']
-            if 'controller_mapping' in self.scene_config:
-                for role, dip in self.scene_config['controller_mapping'].items():
+            scene_config = config['scene']['3d_snake']
+            if 'controller_mapping' in scene_config:
+                for role, dip in scene_config['controller_mapping'].items():
                     try:
                         player_id = PlayerID[role.upper()]
                         self.controller_mapping[dip] = player_id
@@ -170,17 +170,10 @@ class GameScene(Scene):
                     input_handler=self.input_handler
                 )
 
-    def process_player_input(self, player_id, button, button_state=ButtonState.PRESSED):
-        """Process input from a player.
-        
-        Args:
-            player_id: The player ID (PlayerID enum)
-            button: The button that was pressed/released (Button enum)
-            button_state: The button state (ButtonState enum), defaults to PRESSED for backward compatibility
-        """
+    def process_player_input(self, player_id, action):
+        """Process input from a player."""
         if self.current_game:
-            # Pass all parameters directly to the game's process_player_input method
-            self.current_game.process_player_input(player_id, button, button_state)
+            self.current_game.process_player_input(player_id, action)
 
     def update_game_state(self):
         """Update the game state."""
@@ -225,21 +218,11 @@ class GameScene(Scene):
                 # Process controller inputs
                 input_event = self.input_handler.get_direction_key()
                 if input_event:
-                    # Handle the new event format which includes button state
-                    if len(input_event) == 3:
-                        player_id, button, button_state = input_event
-                        if self.game_started and not self.game_over_active:
-                            self.process_player_input(player_id, button, button_state)
-                        elif self.menu_active and button_state == ButtonState.PRESSED:
-                            # Menu only responds to button presses, not releases
-                            self.process_menu_input(player_id, button)
-                    else:
-                        # Backward compatibility for old format (player_id, action)
-                        player_id, action = input_event
-                        if self.game_started and not self.game_over_active:
-                            self.process_player_input(player_id, action)
-                        elif self.menu_active:
-                            self.process_menu_input(player_id, action)
+                    player_id, action = input_event
+                    if self.game_started and not self.game_over_active:
+                        self.process_player_input(player_id, action)
+                    elif self.menu_active:
+                        self.process_menu_input(player_id, action)
 
                 # Update game state if started and not in menu/countdown
                 if self.game_started and not self.game_over_active:

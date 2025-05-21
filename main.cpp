@@ -20,6 +20,7 @@ ABSL_FLAG(int, layer_span, 1, "Layer span (1 for 1:1 mapping)");
 ABSL_FLAG(std::string, rotate_rate, "0,0,0",
           "Continuous rotation rate in degrees/sec for X,Y,Z axes (e.g., "
           "\"10,0,5\")");
+ABSL_FLAG(bool, color_correction, false, "Enable color correction");
 
 // Entry point
 int main(int argc, char *argv[]) {
@@ -74,10 +75,13 @@ int main(int argc, char *argv[]) {
     LOG(INFO) << "Rotation Rate (deg/s): X=" << rotation_rate.x
               << " Y=" << rotation_rate.y << " Z=" << rotation_rate.z;
 
+    const bool color_correction_enabled =
+        absl::GetFlag(FLAGS_color_correction);
+
     // Create and run the volumetric display
     VolumetricDisplay display(width, height, length, ip, port,
                               universes_per_layer, layer_span, alpha,
-                              rotation_rate);
+                              rotation_rate, color_correction_enabled);
 
     // Configure icon
     SetIcon(argv[0]);

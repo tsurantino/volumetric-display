@@ -1,8 +1,8 @@
-from base_game import BaseGame, PlayerID, TeamID, Difficulty, RGB
+from games.util.base_game import BaseGame, PlayerID, TeamID, Difficulty, RGB
 from collections import deque
 import random
 import time
-from game_util import ControllerInputHandler, Button, Direction
+from games.util.game_util import ControllerInputHandler, Button, Direction
 
 class SnakeGame(BaseGame):
     def __init__(self, width=20, height=20, length=20, frameRate=30, config=None, input_handler=None):
