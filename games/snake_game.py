@@ -2,7 +2,8 @@ from games.util.base_game import BaseGame, PlayerID, TeamID, Difficulty, RGB
 from collections import deque
 import random
 import time
-from games.util.game_util import ControllerInputHandler, Button, Direction
+import traceback
+from games.util.game_util import ControllerInputHandler, Button, Direction, ButtonState
 
 class SnakeGame(BaseGame):
     def __init__(self, width=20, height=20, length=20, frameRate=30, config=None, input_handler=None):
@@ -292,11 +293,17 @@ class SnakeGame(BaseGame):
 
         # Draw snakes
         for player_id, snake in self.snakes.items():
+            # Get player's team
             config = self.get_player_config(player_id)
+            if not config or 'team' not in config:
+                continue
+                
             team = config['team']
-            color = self.snake_colors[team]
-            for i, pos in enumerate(snake):
-                x, y, z = pos
+            snake_color = self.snake_colors.get(team, RGB(255, 255, 255))
+            
+            # Draw all segments
+            for segment in snake:
+                x, y, z = segment
                 x *= self.thickness
                 y *= self.thickness
                 z *= self.thickness
@@ -306,10 +313,7 @@ class SnakeGame(BaseGame):
                             if (x+dx < raster.width and 
                                 y+dy < raster.height and 
                                 z+dz < raster.length):
-                                if i == 0:  # Head
-                                    raster.set_pix(x+dx, y+dy, z+dz, RGB(255, 0, 0))  # Red head
-                                else:  # Body
-                                    raster.set_pix(x+dx, y+dy, z+dz, color)
+                                raster.set_pix(x+dx, y+dy, z+dz, snake_color)
 
         # Draw game over border
         if self.game_over_active and self.game_over_flash_state['border_on']:
@@ -317,14 +321,86 @@ class SnakeGame(BaseGame):
             for x in range(raster.width):
                 for y in range(raster.height):
                     for z in range(raster.length):
-                        if (x == 0 or x == raster.width-1 or
-                            y == 0 or y == raster.height-1 or
-                            z == 0 or z == raster.length-1):
+                        if (x == 0 or x == raster.width - 1 or
+                            y == 0 or y == raster.height - 1 or
+                            z == 0 or z == raster.length - 1):
                             raster.set_pix(x, y, z, border_color)
+                            
+    async def update_controller_display_state(self, controller_state, player_id):
+        """Update the controller display for this player."""
+        # Clear the display first
+        await controller_state.clear_lcd()
+        
+        # Handle menu display
+        if self.menu_active:
+            controller_state_dip = controller_state.dip
+            current_selection = self.menu_selections.get(controller_state_dip, 0)
+            has_voted = self.voting_states.get(controller_state_dip, False)
+            
+            # Calculate total players and waiting count
+            total_players = 0
+            waiting_count = 0
+            if self.input_handler and hasattr(self.input_handler, 'controllers'):
+                total_players = len(self.input_handler.controllers)
+                waiting_count = sum(1 for v_dip in self.voting_states if self.voting_states[v_dip])
+            
+            # Write header
+            controller_state.write_lcd(0, 0, "SNAKE: SELECT LEVEL")
+            
+            # Display difficulty options
+            difficulties = list(Difficulty)
+            for i, diff in enumerate(difficulties):
+                marker = " "
+                if i == current_selection:
+                    marker = "<"
+                elif has_voted and self.menu_votes.get(controller_state_dip) == diff:
+                    marker = "X"
+                controller_state.write_lcd(0, i+1, f"{diff.name}")
+                controller_state.write_lcd(19, i+1, marker)
+            
+            # Display status
+            status_text = f"Wait: {total_players - waiting_count} more" if has_voted and total_players > 0 else "SELECT to vote"
+            controller_state.write_lcd(0, 4, status_text)
+            
+        elif self.countdown_active or self.game_over_active:
+            # Use base implementation for countdown and game over
+            await super().update_display(controller_state, player_id)
+            
+        else:
+            # Game is active, show game-specific display
+            config = self.get_player_config(player_id)
+            if not config:
+                controller_state.write_lcd(0, 0, "SNAKE GAME")
+                controller_state.write_lcd(0, 1, "NO PLAYER CONFIG")
+                controller_state.write_lcd(0, 3, "Hold SELECT to EXIT")
+                await controller_state.commit()
+                return
+                
+            # Get player's snake and length
+            team = config['team']
+            snake_length = 0
+            if player_id in self.snakes:
+                snake_length = len(self.snakes[player_id])
+                
+            # Display game info
+            controller_state.write_lcd(0, 0, "SNAKE GAME")
+            controller_state.write_lcd(0, 1, f"TEAM: {team.name}")
+            controller_state.write_lcd(0, 2, f"LENGTH: {snake_length}")
+            controller_state.write_lcd(0, 3, f"DIFFICULTY: {self.difficulty.name}")
+        
+        # Commit the changes
+        await controller_state.commit()
 
-    def process_player_input(self, player_id, action):
+    def process_player_input(self, player_id, action, button_state):
         """Process input from a player."""
         if self.game_over_active:
+            return
+        
+        print(f"Processing player input for player {player_id}; action: {action}; button_state: {button_state}; traceback:")
+        traceback.print_stack()
+        
+        if button_state == ButtonState.RELEASED:
+            # Ignore button releases
             return
 
         if self.menu_active:

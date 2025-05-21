@@ -1,5 +1,5 @@
 from artnet import Scene, RGB
-from games.util.game_util import ControllerInputHandler, DisplayManager, Button, Direction, ButtonState
+from games.util.game_util import ControllerInputHandler, Button, Direction, ButtonState
 import time
 import random
 from enum import Enum
@@ -27,9 +27,9 @@ class GameScene(Scene):
         # Store controller mapping from config
         self.controller_mapping = {}
         if config and 'scene' in config and '3d_snake' in config['scene']:
-            self.scene_config = config['scene']['3d_snake']
-            if 'controller_mapping' in self.scene_config:
-                for role, dip in self.scene_config['controller_mapping'].items():
+            scene_config = config['scene']['3d_snake']
+            if 'controller_mapping' in scene_config:
+                for role, dip in scene_config['controller_mapping'].items():
                     try:
                         player_id = PlayerID[role.upper()]
                         self.controller_mapping[dip] = player_id
@@ -72,7 +72,6 @@ class GameScene(Scene):
         else:
             print("GameScene: ControllerInputHandler initialized successfully.")
         
-        self.display_manager = DisplayManager()
         self.last_update_time = 0
         self.last_countdown_time = 0
         self.game_over_active = False
@@ -84,7 +83,7 @@ class GameScene(Scene):
 
         # Load available games
         self.available_games = self._load_available_games()
-        self.current_game = None
+        self.current_game = self
 
     def _load_available_games(self):
         """Load all available game modules."""
@@ -170,35 +169,261 @@ class GameScene(Scene):
                     input_handler=self.input_handler
                 )
 
-    def process_player_input(self, player_id, button, button_state=ButtonState.PRESSED):
-        """Process input from a player.
-        
-        Args:
-            player_id: The player ID (PlayerID enum)
-            button: The button that was pressed/released (Button enum)
-            button_state: The button state (ButtonState enum), defaults to PRESSED for backward compatibility
-        """
-        if self.current_game:
-            # Pass all parameters directly to the game's process_player_input method
-            self.current_game.process_player_input(player_id, button, button_state)
+    def process_player_input(self, player_id, button, button_state=None):
+        """Process input from a player."""
+        if self.current_game and self.current_game != self:
+            # If button_state is provided, use handle_button_event if available
+            if button_state is not None and hasattr(self.current_game, 'handle_button_event'):
+                self.current_game.handle_button_event(player_id, button, button_state)
+            elif hasattr(self.current_game, 'process_player_input'):
+                # Otherwise fall back to old-style process_player_input
+                # Try with both 2 and 3 arguments for backwards compatibility
+                try:
+                    if button_state is not None:
+                        self.current_game.process_player_input(player_id, button, button_state)
+                    else:
+                        self.current_game.process_player_input(player_id, button)
+                except TypeError:
+                    # If the game doesn't accept button_state, call with just button
+                    try:
+                        self.current_game.process_player_input(player_id, button)
+                    except Exception as e:
+                        print(f"Error in process_player_input: {e}")
 
+    async def update_controller_display_state(self, controller_state, player_id):
+        """Update the controller's LCD display for this player."""
+        
+        # Clear the display first
+        await controller_state.clear_lcd()
+
+        # Handling display for GameScene (Game Selection Menu & Countdown)
+        if self.menu_active:
+            # Get controller DIP from the controller state
+            controller_dip = controller_state.dip if hasattr(controller_state, 'dip') else None
+            
+            # Find matching controller ID based on player_id if dip isn't available
+            if controller_dip is None and self.input_handler:
+                for cid, (cstate, pid) in self.input_handler.controllers.items():
+                    if pid == player_id and cstate == controller_state:
+                        controller_dip = cid
+                        break
+            
+            if controller_dip is None:
+                # Fallback if we can't determine the controller DIP
+                controller_state.write_lcd(0, 0, "GAME SELECT ERROR")
+                controller_state.write_lcd(0, 1, "CONTROLLER DIP")
+                controller_state.write_lcd(0, 2, "NOT IDENTIFIED")
+                await controller_state.commit()
+                return
+                
+            current_selection = self.menu_selections.get(controller_dip, 0)
+            has_voted = self.voting_states.get(controller_dip, False)
+            waiting_count = sum(1 for v_dip in self.voting_states if self.voting_states[v_dip])
+            
+            # Calculate total players
+            total_players = 0
+            if self.input_handler and hasattr(self.input_handler, 'controllers') and self.input_handler.controllers:
+                total_players = len(self.input_handler.controllers)
+            
+            game_votes = {game_name: 0 for game_name in self.available_games.keys()}
+            for voted_game_name in self.menu_votes.values():
+                if voted_game_name in game_votes:
+                    game_votes[voted_game_name] += 1
+            
+            # Write header
+            controller_state.write_lcd(0, 0, "SELECT GAME:")
+            
+            # Get sorted list of game names
+            game_names = list(self.available_games.keys())
+            num_games = len(game_names)
+            
+            # Calculate which games to display (show 3 at a time with scrolling)
+            display_start = 0
+            if num_games > 3:
+                # If selection is 0 or 1, start from 0
+                if current_selection <= 0:
+                    display_start = 0
+                # If selection is at the end, show the last 3 games
+                elif current_selection >= num_games - 1:
+                    display_start = max(0, num_games - 3)
+                # Otherwise, center the selection
+                else:
+                    display_start = current_selection - 1
+            
+            # Display the visible games (up to 3)
+            for i in range(3):
+                if display_start + i < num_games:
+                    game_index = display_start + i
+                    game_name_key = game_names[game_index]
+                    game_display_name = game_name_key.replace('_game', '').upper()
+                    
+                    # Determine if this game is selected or voted for
+                    marker = " "
+                    if current_selection == game_index:
+                        marker = "<"
+                    elif has_voted and self.menu_votes.get(controller_dip) == game_name_key:
+                        marker = "X"
+                    
+                    # Get vote count for this game
+                    votes = game_votes.get(game_name_key, 0)
+                    
+                    # Display game name (left-aligned) and marker (right-aligned)
+                    controller_state.write_lcd(0, i+1, game_display_name)
+                    controller_state.write_lcd(19, i+1, marker)
+                    
+                    # Show vote count if there are votes
+                    if votes > 0:
+                        controller_state.write_lcd(17, i+1, str(votes))
+            
+            # Display status at the bottom (line 4)
+            status_text = f"Wait: {total_players - waiting_count} more" if has_voted and total_players > 0 else "SELECT to vote"
+            controller_state.write_lcd(0, 4, status_text)
+
+        elif self.countdown_active:
+            # GameScene: Countdown to start a selected game
+            selected_game_name = "GAME"
+            if self.current_game:
+                selected_game_name = self.current_game.__class__.__name__.replace('Game', '').upper()
+            
+            controller_state.write_lcd(0, 0, f"STARTING:")
+            controller_state.write_lcd(0, 1, selected_game_name)
+            controller_state.write_lcd(0, 2, f"IN {self.countdown_value}...")
+            controller_state.write_lcd(0, 3, "GET READY!") 
+            
+        elif self.current_game and self.current_game != self:
+            # If current_game is set and not pointing to self, delegate to it
+            if hasattr(self.current_game, 'update_controller_display_state'):
+                await self.current_game.update_controller_display_state(controller_state, player_id)
+            else:
+                # Backwards compatibility for older games using update_display
+                if hasattr(self.current_game, 'update_display'):
+                    await self.current_game.update_display(controller_state, player_id)
+                else:
+                    # Fallback if game has no display update method
+                    controller_state.write_lcd(0, 0, "GAME ACTIVE")
+                    controller_state.write_lcd(0, 1, f"{self.current_game.__class__.__name__}")
+                    controller_state.write_lcd(0, 2, "NO DISPLAY METHOD")
+                    controller_state.write_lcd(0, 3, "IMPLEMENTED")
+                    await controller_state.commit()
+            return  # Return early as the current_game will handle commit
+        
+        # Commit the display updates for GameScene's own displays
+        await controller_state.commit()
+        
     def update_game_state(self):
         """Update the game state."""
-        if self.current_game:
-            self.current_game.update_game_state()
+        pass
 
+    def render_game_state(self, raster):
+        """Render the game state to the volumetric raster."""
+        # Clear the raster (black background)
+        for x in range(self.width):
+            for y in range(self.height):
+                for z in range(self.length):
+                    raster.set_pix(x, y, z, RGB(0, 0, 0))
+                    
+        # When in menu mode, render a rotating cube in the center
+        if self.menu_active:
+            size = 5
+            center_x = self.width // 2
+            center_y = self.height // 2
+            center_z = self.length // 2
+            
+            # Calculate rotation based on time
+            import math
+            angle = (time.monotonic() * 0.5) % (2 * math.pi)
+            sin_angle = math.sin(angle)
+            cos_angle = math.cos(angle)
+            
+            # Define cube points
+            points = []
+            for x in range(-size, size + 1, size):
+                for y in range(-size, size + 1, size):
+                    for z in range(-size, size + 1, size):
+                        if (x == -size or x == size or
+                            y == -size or y == size or
+                            z == -size or z == size):
+                            # Rotate around Y axis
+                            rotated_x = x * cos_angle - z * sin_angle
+                            rotated_z = x * sin_angle + z * cos_angle
+                            
+                            # Add to center
+                            px = int(center_x + rotated_x)
+                            py = int(center_y + y)
+                            pz = int(center_z + rotated_z)
+                            
+                            # Check bounds
+                            if (0 <= px < self.width and
+                                0 <= py < self.height and
+                                0 <= pz < self.length):
+                                points.append((px, py, pz))
+            
+            # Render cube with different colors based on vote counts
+            if self.available_games:
+                color_idx = 0
+                colors = [
+                    RGB(255, 0, 0),    # Red
+                    RGB(0, 255, 0),    # Green
+                    RGB(0, 0, 255),    # Blue
+                    RGB(255, 255, 0),  # Yellow
+                    RGB(255, 0, 255),  # Purple
+                    RGB(0, 255, 255),  # Cyan
+                ]
+                
+                # Calculate vote percentages
+                total_votes = sum(1 for _ in self.voting_states if self.voting_states[_])
+                if total_votes > 0:
+                    color_idx = (len(self.voting_states) * 100 // len(self.input_handler.controllers)) % len(colors)
+                
+                for point in points:
+                    raster.set_pix(point[0], point[1], point[2], colors[color_idx])
+        
+        # When in countdown mode, render a countdown number
+        elif self.countdown_active and self.countdown_value is not None:
+            # Simplified digit rendering in the center
+            digit = self.countdown_value
+            center_x = self.width // 2
+            center_y = self.height // 2
+            center_z = self.length // 2
+            
+            # Define digit patterns (very simplified)
+            if digit == 3:
+                # Draw a "3" in bright blue
+                for x in range(-2, 3):
+                    for y in range(-5, 6):
+                        if (x == -2 or x == 2 or y == -5 or y == 5 or y == 0):
+                            raster.set_pix(center_x + x, center_y + y, center_z, RGB(0, 128, 255))
+            elif digit == 2:
+                # Draw a "2" in bright green
+                for x in range(-2, 3):
+                    for y in range(-5, 6):
+                        if (y == -5 or y == 5 or y == 0 or 
+                            (x == 2 and y < 0) or (x == -2 and y > 0)):
+                            raster.set_pix(center_x + x, center_y + y, center_z, RGB(0, 255, 128))
+            elif digit == 1:
+                # Draw a "1" in bright red
+                for y in range(-5, 6):
+                    raster.set_pix(center_x, center_y + y, center_z, RGB(255, 0, 0))
+                    
     def render(self, raster, current_time):
         """Render the game state."""
         # Update controller displays independently of game state
         if self.input_handler:
-            # Update controller displays
-            asyncio.run_coroutine_threadsafe(
-                self.display_manager.update_displays(
-                    self.input_handler.controllers,
-                    self
-                ),
-                self.input_handler.loop
-            )
+            # Create a new event loop for this thread to handle async calls
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+            # Create update tasks for each controller
+            update_tasks = []
+            for controller_id, (controller_state, player_id) in self.input_handler.controllers.items():
+                update_tasks.append(self.update_controller_display_state(controller_state, player_id))
+                
+            # Run tasks to completion if any exist
+            if update_tasks:
+                loop.run_until_complete(asyncio.gather(*update_tasks))
+            
+            # Clean up
+            loop.close()
 
         # Use higher frame rate for menu and countdown
         current_frame_rate = self.menu_frame_rate if (self.menu_active or self.countdown_active) else self.frameRate
@@ -224,25 +449,29 @@ class GameScene(Scene):
 
                 # Process controller inputs
                 input_event = self.input_handler.get_direction_key()
-                if input_event:
-                    # Handle the new event format which includes button state
-                    if len(input_event) == 3:
-                        player_id, button, button_state = input_event
-                        if self.game_started and not self.game_over_active:
-                            self.process_player_input(player_id, button, button_state)
-                        elif self.menu_active and button_state == ButtonState.PRESSED:
-                            # Menu only responds to button presses, not releases
+                while input_event:  # Process all pending events
+                    player_id, button, button_state = input_event
+                    print(f"Input event: {player_id}, {button}, {button_state}")
+                    
+                    if self.game_started and not self.game_over_active and self.current_game != self:
+                        if hasattr(self.current_game, 'handle_button_event'):
+                            # Use new-style button event handling
+                            self.current_game.handle_button_event(player_id, button, button_state)
+                        else:
+                            # Fall back to old-style input processing for backward compatibility
+                            self.process_player_input(player_id, button)
+                    elif self.menu_active:
+                        # Use menu input processing only if button was pressed (not held/released)
+                        if button_state == ButtonState.PRESSED:
                             self.process_menu_input(player_id, button)
-                    else:
-                        # Backward compatibility for old format (player_id, action)
-                        player_id, action = input_event
-                        if self.game_started and not self.game_over_active:
-                            self.process_player_input(player_id, action)
-                        elif self.menu_active:
-                            self.process_menu_input(player_id, action)
+                    
+                    # Get next event
+                    input_event = self.input_handler.get_direction_key()
 
                 # Update game state if started and not in menu/countdown
-                if self.game_started and not self.game_over_active:
+                if self.game_started and not self.game_over_active and self.current_game != self:
+                    self.current_game.update_game_state()
+                elif self.game_over_active or self.menu_active or self.countdown_active:
                     self.update_game_state()
 
                 # Check for restart signal
@@ -253,9 +482,11 @@ class GameScene(Scene):
         # Clear the raster
         raster.clear()
 
-        # Render game state
-        if self.current_game:
+        # Render game state - make sure we handle the case where current_game is self
+        if self.current_game != self and self.current_game:
             self.current_game.render_game_state(raster)
+        else:
+            self.render_game_state(raster)
 
     def select_game(self, current_time):
         """Handle game selection and voting."""
@@ -265,78 +496,111 @@ class GameScene(Scene):
         # Check if all active controllers have voted
         active_controllers = set(self.input_handler.controllers.keys())
         voted_controllers = set(self.voting_states.keys())
+        
+        # Only proceed if at least one player has voted
+        if not voted_controllers:
+            return  # No votes cast yet
+            
+        # Check if all active controllers have voted
         if not active_controllers.issubset(voted_controllers):
             return  # Not all controllers have voted yet
 
         # All players have voted
         vote_counts = {game: 0 for game in self.available_games}
         for vote in self.menu_votes.values():
-            if vote is not None:
+            if vote is not None and vote in vote_counts:
                 vote_counts[vote] += 1
 
         # Find highest vote count
+        if not vote_counts:
+            return  # No valid votes
+            
         max_votes = max(vote_counts.values())
+        if max_votes == 0:
+            return  # No votes cast
+            
         # Get all games with max votes
         max_games = [g for g, v in vote_counts.items() if v == max_votes]
+        if not max_games:
+            return  # No games with votes
+            
         # Randomly select from tied games
         selected_game = random.choice(max_games)
 
         # Create new game instance
-        game_class = self.available_games[selected_game]
-        self.current_game = game_class(
-            width=self.width,
-            height=self.height,
-            length=self.length,
-            frameRate=self.frameRate,
-            config=self.config,
-            input_handler=self.input_handler
-        )
+        try:
+            game_class = self.available_games[selected_game]
+            self.current_game = game_class(
+                width=self.width,
+                height=self.height,
+                length=self.length,
+                frameRate=self.frameRate,
+                config=self.config,
+                input_handler=self.input_handler
+            )
+            
+            print(f"Selected game: {selected_game}, instantiated {self.current_game.__class__.__name__}")
 
-        # Set difficulty for snake game
-        if hasattr(self.current_game, 'set_difficulty') and self.difficulty is not None:
-            self.current_game.set_difficulty(self.difficulty)
+            # Set difficulty for games that support it
+            if hasattr(self.current_game, 'set_difficulty') and self.difficulty is not None:
+                self.current_game.set_difficulty(self.difficulty)
+                print(f"Set difficulty to {self.difficulty}")
 
-        # Start countdown
-        self.menu_active = False
-        self.countdown_active = True
-        self.countdown_value = 3
-        self.last_countdown_time = current_time
-        self.input_handler.clear_all_select_holds()
+            # Start countdown
+            self.menu_active = False
+            self.countdown_active = True
+            self.countdown_value = 3
+            self.last_countdown_time = current_time
+            self.input_handler.clear_all_select_holds()
+            
+        except Exception as e:
+            print(f"Error creating game instance: {e}")
+            import traceback
+            traceback.print_exc()
 
     def process_menu_input(self, player_id, action):
         """Process menu-related input."""
         if not self.input_handler:
             return
-
-        controller_id = next(cid for cid, (_, pid) in self.input_handler.controllers.items() if pid == player_id)
+    
+        # Find the controller DIP/ID for this player_id
+        controller_dip = None
+        for cid, (_, pid) in self.input_handler.controllers.items():
+            if pid == player_id:
+                controller_dip = cid
+                break
+                
+        if controller_dip is None:
+            print(f"Warning: Could not find controller for player {player_id}")
+            return
         
         if action == Button.SELECT:
-            if controller_id in self.voting_states and self.voting_states[controller_id]:
+            if controller_dip in self.voting_states and self.voting_states[controller_dip]:
                 # If already voted, remove vote
-                self.voting_states[controller_id] = False
-                self.menu_votes.pop(controller_id, None)
+                self.voting_states[controller_dip] = False
+                self.menu_votes.pop(controller_dip, None)
             else:
                 # Convert current selection to vote
-                selection = self.menu_selections.get(controller_id, 0)
+                selection = self.menu_selections.get(controller_dip, 0)
                 selected_game = list(self.available_games.keys())[selection]
-                self.menu_votes[controller_id] = selected_game
-                self.voting_states[controller_id] = True
+                self.menu_votes[controller_dip] = selected_game
+                self.voting_states[controller_dip] = True
         elif action == Button.UP:
             # Move selection up with wraparound
-            current = self.menu_selections.get(controller_id, 0)
-            self.menu_selections[controller_id] = (current - 1) % len(self.available_games)
+            current = self.menu_selections.get(controller_dip, 0)
+            self.menu_selections[controller_dip] = (current - 1) % len(self.available_games)
             # If player was in voting state, remove their vote
-            if controller_id in self.voting_states and self.voting_states[controller_id]:
-                self.voting_states[controller_id] = False
-                self.menu_votes.pop(controller_id, None)
+            if controller_dip in self.voting_states and self.voting_states[controller_dip]:
+                self.voting_states[controller_dip] = False
+                self.menu_votes.pop(controller_dip, None)
         elif action == Button.DOWN:
             # Move selection down with wraparound
-            current = self.menu_selections.get(controller_id, 0)
-            self.menu_selections[controller_id] = (current + 1) % len(self.available_games)
+            current = self.menu_selections.get(controller_dip, 0)
+            self.menu_selections[controller_dip] = (current + 1) % len(self.available_games)
             # If player was in voting state, remove their vote
-            if controller_id in self.voting_states and self.voting_states[controller_id]:
-                self.voting_states[controller_id] = False
-                self.menu_votes.pop(controller_id, None)
+            if controller_dip in self.voting_states and self.voting_states[controller_dip]:
+                self.voting_states[controller_dip] = False
+                self.menu_votes.pop(controller_dip, None)
 
     def cleanup(self):
         """Clean up resources."""

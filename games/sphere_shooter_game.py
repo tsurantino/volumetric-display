@@ -402,4 +402,47 @@ class SphereShooterGame(BaseGame):
                         if (x == 0 or x == self.width - 1 or
                             y == 0 or y == self.height - 1 or
                             z == 0 or z == self.length - 1):
-                            raster.set_pix(x, y, z, border_color) 
+                            raster.set_pix(x, y, z, border_color)
+
+    async def update_controller_display_state(self, controller_state, player_id):
+        """Update the controller display for this player."""
+        if self.game_over_active:
+            # Use default game over display
+            super().update_display(controller_state, player_id)
+            return
+            
+        config = self.get_player_config(player_id)
+        team_name = config['team'].name
+        
+        # Get the player's cannon
+        cannon = self.cannons.get(player_id)
+
+        controller_state.clear()
+        
+        if cannon and cannon.charging and cannon.select_hold_start:
+            # Show charging animation when SELECT is held
+            charge_time = time.monotonic() - cannon.select_hold_start
+            charge_percent = min(int(charge_time / 3.0 * 100), 100)
+            
+            controller_state.write_lcd(0, 0, f"SPHERE SHOOTER")
+            controller_state.write_lcd(0, 1, f"TEAM: {team_name}")
+            
+            # Create a charging progress bar
+            charge_bar = ""
+            bar_length = 20
+            filled = int(charge_percent / 100 * bar_length)
+            charge_bar = "[" + "#" * filled + "-" * (bar_length - filled) + "]"
+            
+            controller_state.write_lcd(0, 2, f"CHARGING: {charge_percent}%")
+            controller_state.write_lcd(0, 3, charge_bar)
+        else:
+            # Regular game display
+            my_score = self.get_player_score(player_id)
+            opponent_score = self.get_opponent_score(player_id)
+            
+            controller_state.write_lcd(0, 0, f"SPHERE SHOOTER")
+            controller_state.write_lcd(0, 1, f"TEAM {team_name}: {my_score}")
+            controller_state.write_lcd(0, 2, f"OPPONENT: {opponent_score}")
+            controller_state.write_lcd(0, 3, "HOLD SELECT TO CHARGE") 
+
+        await controller_state.commit()

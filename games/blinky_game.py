@@ -95,4 +95,33 @@ class BlinkyGame(BaseGame):
                         if (x == 0 or x == self.width - 1 or
                             y == 0 or y == self.height - 1 or
                             z == 0 or z == self.length - 1):
-                            raster.set_pix(x, y, z, border_color) 
+                            raster.set_pix(x, y, z, border_color)
+                            
+    async def update_display(self, controller_state, player_id):
+        """Update the controller display for this player."""
+        # Clear the display first
+        await controller_state.clear_lcd()
+        
+        # If in common states, use the base implementation
+        if self.menu_active or self.countdown_active or self.game_over_active:
+            await super().update_display(controller_state, player_id)
+            return
+            
+        # Game-specific display
+        player_color = PLAYER_TO_COLOR.get(player_id, RGB(255, 255, 255))
+        color_str = f"R:{player_color.r} G:{player_color.g} B:{player_color.b}"
+        
+        controller_state.write_lcd(0, 0, "BLINKY GAME")
+        controller_state.write_lcd(0, 1, f"PLAYER: {player_id.name}")
+        controller_state.write_lcd(0, 2, f"COLOR: {color_str}")
+        
+        # Show cube status
+        if self.cube and self.cube_color:
+            time_left = max(0, self.cube_duration - (time.monotonic() - self.cube_timer))
+            time_left_percent = int(time_left / self.cube_duration * 100)
+            controller_state.write_lcd(0, 3, f"CUBE: {time_left_percent}% left")
+        else:
+            controller_state.write_lcd(0, 3, "Press SELECT for cube")
+            
+        # Commit the changes
+        await controller_state.commit() 

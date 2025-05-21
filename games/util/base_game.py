@@ -111,19 +111,8 @@ class BaseGame:
             button: Button enum value
             button_state: ButtonState enum value (PRESSED, RELEASED, HELD)
         """
-        # Default implementation that routes to the old-style methods for backward compatibility
-        if self.menu_active:
-            # In menu mode, handle menu input
-            if button_state == ButtonState.PRESSED:
-                if button == Button.UP:
-                    self.process_menu_input(player_id, Button.UP)
-                elif button == Button.DOWN:
-                    self.process_menu_input(player_id, Button.DOWN)
-                elif button == Button.SELECT:
-                    self.process_menu_input(player_id, Button.SELECT)
-        else:
-            # In game mode, directly pass all button events to process_player_input
-            self.process_player_input(player_id, button, button_state)
+        # In game mode, directly pass all button events to process_player_input
+        self.process_player_input(player_id, button, button_state)
 
     def get_player_config(self, player_id):
         """Get the configuration for a player."""
@@ -151,13 +140,6 @@ class BaseGame:
         """
         raise NotImplementedError("Subclasses must implement process_player_input")
 
-    def process_menu_input(self, player_id, action):
-        """Process menu input from a player.
-        This is used for game-specific menus, not the game selection menu.
-        """
-        # Default implementation does nothing
-        pass
-
     def update_game_state(self):
         """Update the game state."""
         raise NotImplementedError("Subclasses must implement update_game_state")
@@ -165,6 +147,72 @@ class BaseGame:
     def render_game_state(self, raster):
         """Render the game state to the raster."""
         raise NotImplementedError("Subclasses must implement render_game_state")
+
+    async def update_controller_display_state(self, controller_state, player_id):
+        """Update the controller's LCD display for this player.
+        
+        Args:
+            controller_state: The ControllerState for the player's controller
+            player_id: The PlayerID enum value for this player
+            
+        Note: Implement this in each game subclass to customize display content.
+        Each implementation should clear and commit the display.
+        """
+        # Clear the display first
+        await controller_state.clear_lcd()
+        
+        if self.menu_active:
+            # Default menu display
+            controller_state.write_lcd(0, 0, f"{self.__class__.__name__.replace('Game', '')} MENU")
+            controller_state.write_lcd(0, 2, "Make a selection")
+            controller_state.write_lcd(0, 3, "Press SELECT")
+        elif self.countdown_active:
+            # Default countdown display
+            difficulty_text = ""
+            if hasattr(self, 'difficulty') and self.difficulty:
+                difficulty_text = f"{self.difficulty.name}"
+            
+            controller_state.write_lcd(0, 0, f"{self.__class__.__name__.replace('Game', '')}")
+            if difficulty_text:
+                controller_state.write_lcd(0, 1, difficulty_text)
+            controller_state.write_lcd(0, 2, f"GET READY! {self.countdown_value}...")
+            controller_state.write_lcd(0, 3, "Hold SELECT to EXIT")
+        elif self.game_over_active:
+            # Default game over display
+            score = self.get_player_score(player_id)
+            other_score = self.get_opponent_score(player_id)
+            result = "DRAW"
+            if score > other_score: 
+                result = "WIN! :)"
+            elif score < other_score: 
+                result = "LOSE :("
+            
+            config = self.get_player_config(player_id)
+            team_name = config['team'].name if config and 'team' in config else "NO TEAM"
+            
+            controller_state.write_lcd(0, 0, f"GAME OVER! YOU {result}")
+            controller_state.write_lcd(0, 1, f"TEAM {team_name}: {score}")
+            controller_state.write_lcd(0, 2, f"OPPONENT: {other_score}")
+            controller_state.write_lcd(0, 3, "Hold SELECT to EXIT")
+        else:
+            # Default in-game display
+            config = self.get_player_config(player_id)
+            team_name = config['team'].name if config and 'team' in config else "NO TEAM"
+            score = self.get_player_score(player_id)
+            other_score = self.get_opponent_score(player_id)
+            
+            controller_state.write_lcd(0, 0, f"TEAM: {team_name}")
+            controller_state.write_lcd(0, 1, f"SCORE:    {score}")
+            controller_state.write_lcd(0, 2, f"OPPONENT: {other_score}")
+            controller_state.write_lcd(0, 3, "Hold SELECT to EXIT")
+            
+        # Commit the changes
+        await controller_state.commit()
+        
+    # Add backwards compatibility method
+    async def update_display(self, controller_state, player_id):
+        """Legacy method - delegates to update_controller_display_state"""
+        return await self.update_controller_display_state(controller_state, player_id)
 
     def cleanup(self):
         """Clean up resources."""
