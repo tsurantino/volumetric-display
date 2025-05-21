@@ -31,8 +31,8 @@ BUTTON_SIZE = 30
 BUTTON_SPACING = 15
 LCD_WIDTH = 200
 LCD_HEIGHT = 80
-LCD_CHAR_WIDTH = 15
-LCD_CHAR_HEIGHT = 3
+LCD_CHAR_WIDTH = 20
+LCD_CHAR_HEIGHT = 4
 FONT_SIZE = 12
 
 # Colors
@@ -134,11 +134,11 @@ class ControllerSimulator:
         pygame.display.set_caption("Controller Simulator")
         try:
             self.font = pygame.freetype.SysFont('monospace', FONT_SIZE)
-            self.lcd_font = pygame.freetype.SysFont('monospace', 16)
+            self.lcd_font = pygame.freetype.SysFont('monospace', 15)
         except Exception as e:
             print(f"Error loading fonts: {e}. Using default font.")
             self.font = pygame.freetype.Font(None, FONT_SIZE) # Default font
-            self.lcd_font = pygame.freetype.Font(None, 16)    # Default font
+            self.lcd_font = pygame.freetype.Font(None, 15)    # Default font
             
         self.setup_gui_layout()
 
@@ -372,65 +372,107 @@ class ControllerSimulator:
         # Send initial button state
         await self.send_button_update(dip)
 
-        buffer = b""
-        while self.running:
-            try:
-                data = await reader.read(1024)
-                if not data:
-                    print(f"Client {peername} (DIP {dip}) disconnected.")
-                    break 
+        # Create separate tasks for reading and writing
+        read_task = asyncio.create_task(self._read_loop(reader, dip, peername))
+        write_task = asyncio.create_task(self._write_loop(writer, dip))
 
-                buffer += data
-                buffer = buffer.replace(b'\r', b'') # Clean up line endings
-
-                while b'\n' in buffer:
-                    line, buffer = buffer.split(b'\n', 1)
-                    line_str = line.decode()
-                    if not line_str: continue
-
-                    print(f"Received from DIP {dip}: '{line_str}'") # Debug
-                    parts = line_str.split(':')
-                    command = parts[0]
-
-                    if command == "enum":
-                        response = json.dumps({"type": "controller", "dip": dip}) + "\n"
-                        writer.write(response.encode())
-                        await writer.drain()
-                    elif command == "lcd" and len(parts) >= 4:
-                        try:
-                            x = int(parts[1])
-                            y = int(parts[2])
-                            text = parts[3]
-                            # Update shared state (thread-safe)
-                            self.set_lcd_line(dip, x, y, text)
-                        except (ValueError, IndexError) as e:
-                            print(f"Error parsing LCD command for DIP {dip}: {line_str} - {e}")
-                    elif command == "lcd" and parts[1] == "clear":
-                         self.clear_lcd(dip)
-                    elif command == "noop":
-                         pass # Keep connection alive
-                    # Add handlers for backlight, led etc. if needed
-                    else:
-                         print(f"Unknown command from DIP {dip}: {line_str}")
-
-            except ConnectionResetError:
-                print(f"Client {peername} (DIP {dip}) reset connection.")
-                break
-            except asyncio.CancelledError:
-                print(f"Client handler for DIP {dip} cancelled.")
-                break
-            except Exception as e:
-                print(f"Error handling client for DIP {dip}: {e}")
-                break
-        
-        print(f"Closing connection for DIP {dip}")
-        self.set_client_writer(dip, None)
-        writer.close()
         try:
-            await writer.wait_closed()
+            # Wait for the read task to complete - this happens when the client disconnects
+            # The write task will continue running until then
+            await read_task
         except Exception as e:
-             print(f"Error during writer close for DIP {dip}: {e}")
+            print(f"Error in client handler for DIP {dip}: {e}")
+        finally:
+            # Cancel the write task when the read task completes
+            write_task.cancel()
+            try:
+                await write_task
+            except asyncio.CancelledError:
+                pass
 
+    async def _read_loop(self, reader, dip, peername):
+        buffer = b""
+        # Get writer from controller state
+        writer = self.controllers[dip].client_writer if dip in self.controllers else None
+        
+        try:
+            while self.running:
+                try:
+                    data = await reader.read(1024)
+                    if not data:
+                        print(f"Client {peername} (DIP {dip}) disconnected.")
+                        break
+
+                    buffer += data
+                    buffer = buffer.replace(b'\r', b'')  # Clean up line endings
+
+                    while b'\n' in buffer:
+                        line, buffer = buffer.split(b'\n', 1)
+                        line_str = line.decode()
+                        if not line_str: continue
+
+                        print(f"Received from DIP {dip}: '{line_str}'")  # Debug
+                        # Pass writer to _handle_command
+                        await self._handle_command(dip, line_str, writer)
+
+                except ConnectionResetError:
+                    print(f"Client {peername} (DIP {dip}) reset connection.")
+                    break
+                except asyncio.CancelledError:
+                    print(f"Read loop for DIP {dip} cancelled.")
+                    break
+                except Exception as e:
+                    print(f"Error in read loop for DIP {dip}: {e}")
+                    break
+        finally:
+            # Clean up connection when client disconnects
+            print(f"Closing connection for DIP {dip}")
+            self.set_client_writer(dip, None)
+            if writer:
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except Exception as e:
+                    print(f"Error during writer close for DIP {dip}: {e}")
+
+    async def _write_loop(self, writer, dip):
+        try:
+            while self.running and not writer.is_closing():
+                # Handle any pending writes
+                if dip in self.controllers:
+                    await self.send_button_update(dip)
+                await asyncio.sleep(0.1)  # Prevent busy-waiting
+
+        except asyncio.CancelledError:
+            print(f"Write loop for DIP {dip} cancelled.")
+        except Exception as e:
+            print(f"Error in write loop for DIP {dip}: {e}")
+
+    async def _handle_command(self, dip, line_str, writer):
+        parts = line_str.split(':')
+        command = parts[0]
+
+        if command == "enum":
+            response = json.dumps({"type": "controller", "dip": dip}) + "\n"
+            if writer:
+                writer.write(response.encode())
+                await writer.drain()
+        elif command == "lcd" and len(parts) >= 4:
+            try:
+                x = int(parts[1])
+                y = int(parts[2])
+                text = ':'.join(parts[3:])
+                self.set_lcd_line(dip, x, y, text)
+            except (ValueError, IndexError) as e:
+                print(f"Error parsing LCD command for DIP {dip}: {line_str} - {e}")
+        elif command == "lcd" and parts[1] == "clear":
+            self.clear_lcd(dip)
+        elif command == "noop":
+            pass  # Keep connection alive
+        else:
+            print(f"Unknown command from DIP {dip}: {line_str}")
+        
+        # Don't close the connection after handling commands - connection should stay open
 
     async def start_server_for_controller(self, dip: int, port: int):
          try:
