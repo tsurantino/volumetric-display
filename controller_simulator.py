@@ -25,15 +25,15 @@ else:
     print("Warning: Pygame initialized outside main thread. GUI might not work.")
 
 # Constants
-WINDOW_WIDTH = 1200
-WINDOW_HEIGHT = 800
-BUTTON_SIZE = 40
-BUTTON_SPACING = 10
-LCD_WIDTH = 300
-LCD_HEIGHT = 100
-LCD_CHAR_WIDTH = 20
-LCD_CHAR_HEIGHT = 4
-FONT_SIZE = 20
+WINDOW_WIDTH = 600
+WINDOW_HEIGHT = 600
+BUTTON_SIZE = 30
+BUTTON_SPACING = 15
+LCD_WIDTH = 200
+LCD_HEIGHT = 80
+LCD_CHAR_WIDTH = 15
+LCD_CHAR_HEIGHT = 3
+FONT_SIZE = 12
 
 # Colors
 BLACK = (0, 0, 0)
@@ -147,7 +147,7 @@ class ControllerSimulator:
         if not pygame_initialized or not self.screen: return
 
         controller_width = LCD_WIDTH + 2 * BUTTON_SPACING
-        controller_height = LCD_HEIGHT + 4 * BUTTON_SIZE + 5 * BUTTON_SPACING
+        controller_height = LCD_HEIGHT + 3 * BUTTON_SIZE + 5 * BUTTON_SPACING
         
         positions = [
             (WINDOW_WIDTH//4 - controller_width//2, WINDOW_HEIGHT//4 - controller_height//2),
@@ -171,9 +171,9 @@ class ControllerSimulator:
              controller.button_rects = {
                  Button.UP: pygame.Rect(button_center_x - BUTTON_SIZE//2, button_start_y, BUTTON_SIZE, BUTTON_SIZE),
                  Button.LEFT: pygame.Rect(button_center_x - 3*BUTTON_SIZE//2 - BUTTON_SPACING, button_start_y + BUTTON_SIZE + BUTTON_SPACING, BUTTON_SIZE, BUTTON_SIZE),
-                 Button.DOWN: pygame.Rect(button_center_x - BUTTON_SIZE//2, button_start_y + BUTTON_SIZE + BUTTON_SPACING, BUTTON_SIZE, BUTTON_SIZE),
                  Button.RIGHT: pygame.Rect(button_center_x + BUTTON_SIZE//2 + BUTTON_SPACING, button_start_y + BUTTON_SIZE + BUTTON_SPACING, BUTTON_SIZE, BUTTON_SIZE),
-                 Button.SELECT: pygame.Rect(button_center_x - BUTTON_SIZE//2, button_start_y + 2*BUTTON_SIZE + 2*BUTTON_SPACING, BUTTON_SIZE, BUTTON_SIZE)
+                 Button.DOWN: pygame.Rect(button_center_x - BUTTON_SIZE//2, button_start_y + 2*BUTTON_SIZE + 2*BUTTON_SPACING, BUTTON_SIZE, BUTTON_SIZE),
+                 Button.SELECT: pygame.Rect(button_center_x + BUTTON_SIZE//2 + BUTTON_SPACING, button_start_y, BUTTON_SIZE, BUTTON_SIZE),
              }
              # Key names for display
              self.key_names = { # TODO: Refactor this - maybe load from config?
