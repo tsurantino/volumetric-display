@@ -89,7 +89,7 @@ class GameScene(Scene):
     def _load_available_games(self):
         """Load all available game modules."""
         games = {}
-        games_dir = os.path.dirname(os.path.abspath(__file__))
+        games_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "games")
         print(f"Looking for game modules in directory: {games_dir}")
         
         for filename in os.listdir(games_dir):
