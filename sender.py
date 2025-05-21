@@ -144,14 +144,14 @@ def main():
         print(f"Error loading scene: {e}")
         return
 
-    start_time = time.time()
+    start_time = time.monotonic()
     print("🚀 Starting ArtNet DMX Transmission with Sync...")
     print(f"Using {len(controllers)} controllers for {display_config.length} z-slices")
     print(f"Orientation: {display_config.orientation}")
 
     try:
         while True:
-            current_time = time.time() - start_time
+            current_time = time.monotonic() - start_time
 
             # Update the raster using the scene
             scene.render(raster, current_time)

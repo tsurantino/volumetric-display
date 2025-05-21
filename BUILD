@@ -62,7 +62,6 @@ py_binary(
     deps = [
         ":artnet",
         requirement("numpy"),
-        requirement("pygame"),
     ],
 )
 
@@ -97,4 +96,12 @@ cc_library(
 py_library(
     name = "control_port",
     srcs = ["control_port.py"],
+)
+
+py_test(
+    name = "control_port_test",
+    srcs = ["control_port_test.py"],
+    deps = [
+        ":control_port",
+    ],
 )

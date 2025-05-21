@@ -115,11 +115,21 @@ class Raster:
             x, y, z: Original coordinates
             color: RGB color to set
         """
+        assert x >= 0 and x < self.width
+        assert y >= 0 and y < self.height
+        assert z >= 0 and z < self.length
+
         # Transform coordinates
         tx, ty, tz = self._transform_coords(x, y, z)
         # Calculate index in the data array
         idx = ty * self.width + tx + tz * self.width * self.height
         self.data[idx] = color
+
+    def clear(self):
+        """
+        Clear the raster.
+        """
+        self.data = [RGB(0, 0, 0) for _ in range((self.width * self.height * self.length))]
 
 
 def saturate_u8(value):

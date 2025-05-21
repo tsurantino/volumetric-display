@@ -90,15 +90,26 @@ class ControllerState:
         """Find contiguous regions of changes in a line."""
         changes = []
         start = None
+        last_change_end = None
+        
         for x in range(self._display_width):
             if self._front_buffer[y][x] != self._back_buffer[y][x]:
                 if start is None:
-                    start = x
+                    # If within 3 chars of previous change, extend previous change
+                    if last_change_end is not None and x - last_change_end <= 3:
+                        changes[-1] = (changes[-1][0], x + 1)
+                        last_change_end = x + 1
+                    else:
+                        start = x
+                        last_change_end = None
             elif start is not None:
                 changes.append((start, x))
+                last_change_end = x
                 start = None
+                
         if start is not None:
             changes.append((start, self._display_width))
+            
         return changes
 
     async def commit(self):

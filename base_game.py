@@ -56,13 +56,14 @@ PLAYER_CONFIG = {
 }
 
 class BaseGame:
-    def __init__(self, width=20, height=20, length=20, frameRate=3, input_handler_type='controller', config=None):
+    def __init__(self, width=20, height=20, length=20, frameRate=3, config=None, input_handler=None):
         self.width = width
         self.height = height
         self.length = length
         self.frameRate = frameRate
         self.base_frame_rate = frameRate  # Store original frame rate
         self.config = config
+        self.input_handler = input_handler
 
         # Initialize menu-related attributes
         self.menu_selections = {}  # Maps controller_id to their current selection
@@ -74,29 +75,13 @@ class BaseGame:
         if config and 'scene' in config and '3d_snake' in config['scene']:
             scene_config = config['scene']['3d_snake']
             if 'controller_mapping' in scene_config:
-                # Convert string keys to PlayerID enum values
                 for role, dip in scene_config['controller_mapping'].items():
                     try:
-                        # Convert role to uppercase
                         role_upper = role.upper()
                         player_id = PlayerID[role_upper]
                         self.controller_mapping[dip] = player_id
-                        print(f"Mapped controller DIP {dip} to {player_id.name}")
                     except KeyError:
-                        print(f"Warning: Unknown player role '{role}' in controller mapping")
-
-        print(f"Initializing game with input type: {input_handler_type}")
-        if input_handler_type == 'controller':
-            print("Attempting to initialize controller input...")
-            controller_handler = ControllerInputHandler(controller_mapping=self.controller_mapping)
-            if controller_handler.start_initialization():
-                self.input_handler = controller_handler
-                print("Controller input handler started.")
-            else:
-                print("Controller initialization failed, falling back to Pygame.")
-                self.input_handler = None
-        else:
-            self.input_handler = None
+                        print(f"BaseGame: Warning: Unknown player role '{role}' in controller mapping")
 
         self.display_manager = DisplayManager()
         self.last_update_time = 0

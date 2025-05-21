@@ -136,12 +136,12 @@ class Cannon:
     radius: float = 1.0
 
 class SphereShooterGame(BaseGame):
-    def __init__(self, width=20, height=20, length=20, frameRate=30, input_handler_type='controller', config=None):
+    def __init__(self, width=20, height=20, length=20, frameRate=30, config=None, input_handler=None):
         self.team_colors = {
             TeamID.BLUE: RGB(0, 0, 255),    # Blue team
             TeamID.ORANGE: RGB(255, 165, 0)  # Orange team
         }
-        super().__init__(width, height, length, frameRate, input_handler_type, config)
+        super().__init__(width, height, length, frameRate, config, input_handler)
         self.spheres: List[Sphere] = []
         self.cannons: Dict[PlayerID, Cannon] = {}
         self.reset_game()

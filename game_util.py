@@ -5,6 +5,20 @@ from collections import deque
 from enum import Enum
 import control_port
 
+# Attempt to import GameScene and BaseGame for type checking
+# This might create a circular dependency if they also import from game_util
+# A cleaner solution might involve a state type enum or attribute checking
+try:
+    from game_scene import GameScene
+except ImportError:
+    GameScene = None # Fallback if import fails, to avoid crashing if files are temporarily unavailable
+
+try:
+    from base_game import BaseGame, Difficulty # Import Difficulty for BaseGame countdown screen
+except ImportError:
+    BaseGame = None
+    Difficulty = None # Fallback
+
 class Button(Enum):
     UP = 0
     LEFT = 1
@@ -36,108 +50,171 @@ class DisplayManager:
         self.last_display_update = current_time
 
         async def update_single_controller(controller_state, player_id):
-            if game_state.countdown_active:
-                # Show countdown display
-                controller_state.clear()
-                config = game_state.get_player_config(player_id)
-                team = config['team']
-                difficulty_text = ">>> EASY <<<" if game_state.difficulty == game_state.Difficulty.EASY else ">>> MEDIUM <<<" if game_state.difficulty == game_state.Difficulty.MEDIUM else ">>> HARD <<<"
-                
-                controller_state.write_lcd(0, 0, f"TEAM {team.name}")
-                controller_state.write_lcd(0, 1, difficulty_text)
-                controller_state.write_lcd(0, 2, f"GET READY! {game_state.countdown_value}...")
-                controller_state.write_lcd(0, 3, "Hold SELECT to EXIT")
-                await controller_state.commit()
-                return
+            controller_state.clear() # Clear at the beginning of each update for a controller
 
-            if game_state.menu_active:
-                # Show game selection menu
-                input_handler = game_state.input_handler
-                current_selection = game_state.menu_selections.get(controller_state.dip, 0)
-                has_voted = game_state.voting_states.get(controller_state.dip, False)
-                waiting_count = sum(1 for v in game_state.voting_states.values() if v)
-                total_players = len(controllers)
-                
-                # Count votes for each game
-                game_votes = {game: 0 for game in game_state.available_games}
-                for vote in game_state.menu_votes.values():
-                    if vote is not None:
-                        game_votes[vote] += 1
-                
-                # Show '<' for current selection, 'X' for confirmed vote
-                controller_state.clear()
-                controller_state.write_lcd(0, 0, "SELECT GAME")
-                
-                for i, game in enumerate(game_state.available_games):
-                    marker = "X" if has_voted and game_state.menu_votes.get(controller_state.dip) == game else "<" if current_selection == i else " "
-                    votes = game_votes[game]
-                    controller_state.write_lcd(0, i+1, game.upper())
-                    controller_state.write_lcd(7, i+1, marker)
-                    if votes > 0:
-                        controller_state.write_lcd(17, i+1, str(votes))
-                
-                status_text = f"Waiting for {total_players - waiting_count} more" if has_voted else "Press SELECT to vote"
-                controller_state.write_lcd(0, 4, status_text)
-                
-                await controller_state.commit()
-            elif game_state.game_over_active:
-                # Show game over screen
-                config = game_state.get_player_config(player_id)
-                team = config['team']
-                score = game_state.get_player_score(player_id)
-                other_score = game_state.get_opponent_score(player_id)
+            game_state_class_name = None
+            if hasattr(game_state, '__class__') and hasattr(game_state.__class__, '__name__'):
+                game_state_class_name = game_state.__class__.__name__
 
-                # Determine winner
-                if score > other_score:
-                    result = "WIN"
-                elif score < other_score:
-                    result = "LOSE"
-                else:
+            print("Current game state class name:", game_state_class_name)
+
+            if game_state_class_name == 'GameScene':
+                # Handling display for GameScene (Game Selection Menu & Countdown)
+                if game_state.menu_active:
+                    # GameScene: Game Selection Menu
+                    # input_handler is on game_state (GameScene instance)
+                    current_selection = game_state.menu_selections.get(controller_state.dip, 0)
+                    has_voted = game_state.voting_states.get(controller_state.dip, False)
+                    waiting_count = sum(1 for v_dip in game_state.voting_states if game_state.voting_states[v_dip])
+                    # CORRECTED: total_players calculation using game_state.input_handler
+                    total_players = 0
+                    if game_state.input_handler and hasattr(game_state.input_handler, 'controllers') and game_state.input_handler.controllers:
+                        total_players = len(game_state.input_handler.controllers)
+                    
+                    game_votes = {game_name: 0 for game_name in game_state.available_games.keys()}
+                    for voted_game_name in game_state.menu_votes.values():
+                        if voted_game_name in game_votes:
+                            game_votes[voted_game_name] += 1
+                    
+                    # Write header
+                    controller_state.write_lcd(0, 0, "SELECT GAME:")
+                    
+                    # Get sorted list of game names
+                    game_names = list(game_state.available_games.keys())
+                    num_games = len(game_names)
+                    
+                    # Calculate which games to display (show 3 at a time with scrolling)
+                    display_start = 0
+                    if num_games > 3:
+                        # If selection is 0 or 1, start from 0
+                        if current_selection <= 0:
+                            display_start = 0
+                        # If selection is at the end, show the last 3 games
+                        elif current_selection >= num_games - 1:
+                            display_start = max(0, num_games - 3)
+                        # Otherwise, center the selection
+                        else:
+                            display_start = current_selection - 1
+                    
+                    # Display the visible games (up to 3)
+                    for i in range(3):
+                        if display_start + i < num_games:
+                            game_index = display_start + i
+                            game_name_key = game_names[game_index]
+                            game_display_name = game_name_key.replace('_game', '').upper()
+                            
+                            # Determine if this game is selected or voted for
+                            marker = " "
+                            if current_selection == game_index:
+                                marker = "<"
+                            elif has_voted and game_state.menu_votes.get(controller_state.dip) == game_name_key:
+                                marker = "X"
+                            
+                            # Get vote count for this game
+                            votes = game_votes.get(game_name_key, 0)
+                            
+                            # Display game name (left-aligned) and marker (right-aligned)
+                            controller_state.write_lcd(0, i+1, game_display_name)
+                            controller_state.write_lcd(19, i+1, marker)
+                            
+                            # Show vote count if there are votes
+                            if votes > 0:
+                                controller_state.write_lcd(17, i+1, str(votes))
+                    
+                    # Display status at the bottom (line 4)
+                    status_text = f"Wait: {total_players - waiting_count} more" if has_voted and total_players > 0 else "SELECT to vote"
+                    controller_state.write_lcd(0, 4, status_text)
+
+                elif game_state.countdown_active:
+                    # GameScene: Countdown to start a selected game
+                    selected_game_name = "GAME"
+                    if game_state.current_game:
+                        selected_game_name = game_state.current_game.__class__.__name__.replace('Game', '').upper()
+                    
+                    controller_state.write_lcd(0, 0, f"STARTING:")
+                    controller_state.write_lcd(0, 1, selected_game_name)
+                    controller_state.write_lcd(0, 2, f"IN {game_state.countdown_value}...")
+                    controller_state.write_lcd(0, 3, "GET READY!")
+            
+            # Check for BaseGame derivatives by specific class names for now
+            # A more robust check could be `'BaseGame' in [cls.__name__ for cls in type(game_state).mro()]`
+            # but that still relies on `BaseGame` class identity for MRO building if not careful.
+            elif game_state_class_name in ['SnakeGame', 'BlinkyGame']: # Add other game class names if needed
+                # Handling display for a specific game (BaseGame derivative like SnakeGame)
+                config = game_state.get_player_config(player_id) # player_id is passed to update_single_controller
+                team_name = config['team'].name if config and 'team' in config else "NO TEAM"
+
+                if game_state.menu_active: # Game-specific menu (e.g., Snake difficulty)
+                    # This part needs to be made more generic or use a dispatch mechanism
+                    # For now, let's assume a generic "MENU ACTIVE" message or adapt Snake's old menu
+                    if game_state.__class__.__name__ == 'SnakeGame': # Specific to SnakeGame for now
+                        current_selection = game_state.menu_selections.get(controller_state.dip, 0) # 0:EASY, 1:MEDIUM, 2:HARD
+                        has_voted = game_state.voting_states.get(controller_state.dip, False)
+                        
+                        easy_votes = sum(1 for v in game_state.menu_votes.values() if v == Direction.UP) # Assuming UP for EASY
+                        medium_votes = sum(1 for v in game_state.menu_votes.values() if v == Direction.DOWN) # Assuming DOWN for MEDIUM
+                        hard_votes = sum(1 for v in game_state.menu_votes.values() if v is None) # Assuming None for HARD (default select)
+
+                        easy_marker = "X" if has_voted and game_state.menu_votes.get(controller_state.dip) == Direction.UP else "<" if current_selection == 0 else " "
+                        medium_marker = "X" if has_voted and game_state.menu_votes.get(controller_state.dip) == Direction.DOWN else "<" if current_selection == 1 else " "
+                        hard_marker = "X" if has_voted and game_state.menu_votes.get(controller_state.dip) is None else "<" if current_selection == 2 else " "
+
+                        controller_state.write_lcd(0,0, "SNAKE: DIFFICULTY")
+                        controller_state.write_lcd(0,1, f"EASY   {easy_marker} ({easy_votes})")
+                        controller_state.write_lcd(0,2, f"MEDIUM {medium_marker} ({medium_votes})")
+                        controller_state.write_lcd(0,3, f"HARD   {hard_marker} ({hard_votes})")
+                    else:
+                        controller_state.write_lcd(0, 0, f"{game_state.__class__.__name__.upper()}")
+                        controller_state.write_lcd(0, 1, "MENU ACTIVE")
+                        controller_state.write_lcd(0, 2, "Press SELECT")
+
+                elif game_state.countdown_active:
+                    # Game-specific countdown (e.g., Snake after difficulty selection)
+                    difficulty_text = "??"
+                    if hasattr(game_state, 'difficulty') and game_state.difficulty and hasattr(game_state.difficulty, 'name'):
+                        # Compare enum member names as strings
+                        if game_state.difficulty.name == 'EASY': difficulty_text = ">> EASY <<"
+                        elif game_state.difficulty.name == 'MEDIUM': difficulty_text = ">> MEDIUM <<"
+                        elif game_state.difficulty.name == 'HARD': difficulty_text = ">> HARD <<"
+                    
+                    controller_state.write_lcd(0, 0, f"TEAM {team_name}")
+                    controller_state.write_lcd(0, 1, difficulty_text)
+                    controller_state.write_lcd(0, 2, f"GET READY! {game_state.countdown_value}...")
+                    controller_state.write_lcd(0, 3, "Hold SELECT to EXIT")
+                
+                elif game_state.game_over_active:
+                    # Game-specific game over screen
+                    score = game_state.get_player_score(player_id)
+                    other_score = game_state.get_opponent_score(player_id)
                     result = "DRAW"
+                    if score > other_score: result = "WIN! :)"
+                    elif score < other_score: result = "LOSE :("
 
-                controller_state.clear()
-                controller_state.write_lcd(0, 0, f"GAME OVER! YOU {result}")
-                controller_state.write_lcd(0, 1, f"TEAM {team.name}: {score}")
-                controller_state.write_lcd(0, 2, f"OPPONENT: {other_score}")
+                    controller_state.write_lcd(0, 0, f"GAME OVER! YOU {result}")
+                    controller_state.write_lcd(0, 1, f"TEAM {team_name}: {score}")
+                    controller_state.write_lcd(0, 2, f"OPPONENT: {other_score}")
+                    controller_state.write_lcd(0, 3, "Hold SELECT to EXIT") # Consider exit countdown logic from old code
 
-                # Show exit countdown if SELECT is being held
-                hold_data = game_state.input_handler.select_hold_data.get(controller_state.dip, {'is_counting_down': False, 'start_time': 0})
-                if hold_data['is_counting_down']:
-                    remaining = 5 - (current_time - hold_data['start_time'])
-                    if remaining > 0:
-                        controller_state.write_lcd(0, 3, f"EXIT: {remaining:.1f}s")
-                    else:
-                        controller_state.write_lcd(0, 3, "EXITING...")
-                else:
-                    controller_state.write_lcd(0, 3, "Hold SELECT to EXIT")
-
-                await controller_state.commit()
+                else: # Game in progress
+                    score = game_state.get_player_score(player_id)
+                    other_score = game_state.get_opponent_score(player_id)
+                    controller_state.write_lcd(0, 0, f"TEAM: {team_name}")
+                    controller_state.write_lcd(0, 1, f"SCORE:    {score}")
+                    controller_state.write_lcd(0, 2, f"OPPONENT: {other_score}")
+                    controller_state.write_lcd(0, 3, "Hold SELECT to EXIT") # Consider exit countdown logic
+            
             else:
-                # Show game state (team assignment and scores)
-                config = game_state.get_player_config(player_id)
-                team = config['team']
-                score = game_state.get_player_score(player_id)
-                other_score = game_state.get_opponent_score(player_id)
-
-                controller_state.clear()
-                controller_state.write_lcd(0, 0, f"TEAM: {team.name}")
-                controller_state.write_lcd(0, 1, "SCORE:")
-                controller_state.write_lcd(16, 1, str(score))
-                controller_state.write_lcd(0, 2, "OPPONENT:")
-                controller_state.write_lcd(16, 2, str(other_score))
-
-                # Show exit countdown if SELECT is being held
-                hold_data = game_state.input_handler.select_hold_data.get(controller_state.dip, {'is_counting_down': False, 'start_time': 0})
-                if hold_data['is_counting_down']:
-                    remaining = 5 - (current_time - hold_data['start_time'])
-                    if remaining > 0:
-                        controller_state.write_lcd(0, 3, f"EXIT: {remaining:.1f}s")
-                    else:
-                        controller_state.write_lcd(0, 3, "EXITING...")
+                # Fallback or unhandled game_state type
+                controller_state.write_lcd(0,0, "ARTNET DISPLAY")
+                controller_state.write_lcd(0,1, "Unknown State")
+                if game_state_class_name:
+                     controller_state.write_lcd(0,2, game_state_class_name[:19])
+                elif game_state:
+                    controller_state.write_lcd(0,2, "Unnamed GS Type")
                 else:
-                    controller_state.write_lcd(0, 3, "Hold SELECT to EXIT")
+                    controller_state.write_lcd(0,2, "No GameState")
 
-                await controller_state.commit()
+            await controller_state.commit()
 
         # Create and gather all controller update tasks
         update_tasks = [

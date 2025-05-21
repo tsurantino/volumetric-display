@@ -3,9 +3,16 @@ from game_util import Button
 import random
 import time
 
+PLAYER_TO_COLOR = {
+    PlayerID.BLUE_P1: RGB(0, 128, 255),
+    PlayerID.BLUE_P2: RGB(128, 0, 255),
+    PlayerID.ORANGE_P1: RGB(255, 128, 0),
+    PlayerID.ORANGE_P2: RGB(255, 0, 128),
+}
+
 class BlinkyGame(BaseGame):
-    def __init__(self, width=20, height=20, length=20, frameRate=30, input_handler_type='controller', config=None):
-        super().__init__(width, height, length, frameRate, input_handler_type, config)
+    def __init__(self, width=20, height=20, length=20, frameRate=30, config=None, input_handler=None):
+        super().__init__(width, height, length, frameRate, config=config, input_handler=input_handler)
         self.cube = None
         self.cube_color = None
         self.cube_timer = 0
@@ -40,11 +47,6 @@ class BlinkyGame(BaseGame):
             center_y = random.randint(size, self.height - size - 1)
             center_z = random.randint(size, self.length - size - 1)
             
-            # Generate a random bright color
-            r = random.randint(128, 255)
-            g = random.randint(128, 255)
-            b = random.randint(128, 255)
-            
             # Create cube points
             self.cube = []
             for x in range(center_x - size, center_x + size + 1):
@@ -56,7 +58,7 @@ class BlinkyGame(BaseGame):
                             z == center_z - size or z == center_z + size):
                             self.cube.append((x, y, z))
             
-            self.cube_color = RGB(r, g, b)
+            self.cube_color = PLAYER_TO_COLOR[player_id]
             self.cube_timer = time.monotonic()
 
     def update_game_state(self):
