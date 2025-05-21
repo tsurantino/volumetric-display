@@ -120,7 +120,7 @@ class BaseGame:
         """
         # Clear the display first
         await controller_state.clear_lcd()
-        await controller_state.write_lcd(0, 0, "Game: {}".format(self.__class__.__name__))
+        controller_state.write_lcd(0, 0, "Game: {}".format(self.__class__.__name__))
             
         # Commit the changes
         await controller_state.commit()

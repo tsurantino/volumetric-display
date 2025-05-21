@@ -1,5 +1,5 @@
 from games.util.base_game import BaseGame, PlayerID, TeamID, Difficulty, RGB
-from games.util.game_util import Button
+from games.util.game_util import Button, ButtonState
 import random
 import time
 
@@ -35,12 +35,15 @@ class BlinkyGame(BaseGame):
         """Get the score for a player's opponent."""
         return 0  # Blinky game doesn't have scores
 
-    def process_player_input(self, player_id, action):
+    def process_player_input(self, player_id, button, button_state):
         """Process input from a player."""
         if self.game_over_active:
             return
+        
+        if button_state == ButtonState.RELEASED:
+            return
 
-        if action == Button.SELECT:
+        if button == Button.SELECT:
             # Create a random cube
             size = random.randint(3, 8)
             center_x = random.randint(size, self.width - size - 1)
@@ -97,19 +100,14 @@ class BlinkyGame(BaseGame):
                             z == 0 or z == self.length - 1):
                             raster.set_pix(x, y, z, border_color)
                             
-    async def update_display(self, controller_state, player_id):
+    async def update_controller_display_state(self, controller_state, player_id):
         """Update the controller display for this player."""
         # Clear the display first
         await controller_state.clear_lcd()
-        
-        # If in common states, use the base implementation
-        if self.menu_active or self.countdown_active or self.game_over_active:
-            await super().update_display(controller_state, player_id)
-            return
             
         # Game-specific display
         player_color = PLAYER_TO_COLOR.get(player_id, RGB(255, 255, 255))
-        color_str = f"R:{player_color.r} G:{player_color.g} B:{player_color.b}"
+        color_str = f"R{player_color.red} G{player_color.green} B{player_color.blue}"
         
         controller_state.write_lcd(0, 0, "BLINKY GAME")
         controller_state.write_lcd(0, 1, f"PLAYER: {player_id.name}")
@@ -121,7 +119,7 @@ class BlinkyGame(BaseGame):
             time_left_percent = int(time_left / self.cube_duration * 100)
             controller_state.write_lcd(0, 3, f"CUBE: {time_left_percent}% left")
         else:
-            controller_state.write_lcd(0, 3, "Press SELECT for cube")
+            controller_state.write_lcd(0, 3, "SELECT to cube")
             
         # Commit the changes
         await controller_state.commit() 
