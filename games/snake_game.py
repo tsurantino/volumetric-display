@@ -121,30 +121,41 @@ class SnakeGame(BaseGame):
         # Check if all active controllers have voted
         active_controllers = set(self.input_handler.controllers.keys())
         voted_controllers = set(self.voting_states.keys())
+        
+        # Only proceed if at least one controller has voted
+        if not voted_controllers:
+            return  # No votes cast yet
+            
+        # Check if all active controllers have voted
         if not active_controllers.issubset(voted_controllers):
             return  # Not all controllers have voted yet
 
         # All players have voted
-        vote_counts = {Difficulty.EASY: 0, Difficulty.MEDIUM: 0, Difficulty.HARD: 0}
-        for vote in self.menu_votes.values():
-            if vote == Direction.UP:
-                vote_counts[Difficulty.EASY] += 1
-            elif vote == Direction.DOWN:
-                vote_counts[Difficulty.MEDIUM] += 1
-            else:
-                vote_counts[Difficulty.HARD] += 1
+        vote_counts = {d: 0 for d in Difficulty}
+        for difficulty in self.menu_votes.values():
+            if difficulty in vote_counts:
+                vote_counts[difficulty] += 1
 
         # Find highest vote count
         max_votes = max(vote_counts.values())
+        if max_votes == 0:
+            return  # No votes cast
+            
         # Get all difficulties with max votes
         max_difficulties = [d for d, v in vote_counts.items() if v == max_votes]
+        if not max_difficulties:
+            return  # No difficulties with votes
+            
         # Randomly select from tied difficulties
         self.difficulty = random.choice(max_difficulties)
+        print(f"Selected difficulty: {self.difficulty.name}")
 
         # Set game speed based on difficulty
         if self.difficulty == Difficulty.EASY:
             self.step_rate = 1  # 1 step per second
-        else:
+        elif self.difficulty == Difficulty.MEDIUM:
+            self.step_rate = 2  # 2 steps per second
+        else:  # HARD
             self.step_rate = 3  # 3 steps per second
 
         # Start countdown
@@ -158,43 +169,53 @@ class SnakeGame(BaseGame):
         if not self.input_handler or not hasattr(self.input_handler, 'controllers'):
             return
 
-        try:
-            controller_id = next(cid for cid, (_, pid) in self.input_handler.controllers.items() if pid == player_id)
-        except StopIteration:
-            return  # No matching controller found
+        # Find the controller DIP/ID for this player
+        controller_dip = None
+        for cid, (_, pid) in self.input_handler.controllers.items():
+            if pid == player_id:
+                controller_dip = cid
+                break
+                
+        if controller_dip is None:
+            print(f"Warning: Could not find controller for player {player_id}")
+            return
         
         if action == Button.SELECT:
-            if controller_id in self.voting_states and self.voting_states[controller_id]:
+            if controller_dip in self.voting_states and self.voting_states[controller_dip]:
                 # If already voted, remove vote
-                self.voting_states[controller_id] = False
-                self.menu_votes.pop(controller_id, None)
+                self.voting_states[controller_dip] = False
+                self.menu_votes.pop(controller_dip, None)
+                print(f"Player {player_id} removed their vote")
             else:
-                # Convert current selection to vote
-                selection = self.menu_selections.get(controller_id, 0)
-                if selection == 0:
-                    self.menu_votes[controller_id] = Direction.UP  # EASY
-                elif selection == 1:
-                    self.menu_votes[controller_id] = Direction.DOWN  # MEDIUM
+                # Convert current selection to difficulty directly
+                selection = self.menu_selections.get(controller_dip, 0)
+                difficulties = list(Difficulty)
+                if 0 <= selection < len(difficulties):
+                    voted_difficulty = difficulties[selection]
+                    self.menu_votes[controller_dip] = voted_difficulty
+                    self.voting_states[controller_dip] = True
+                    print(f"Player {player_id} voted for {voted_difficulty.name}")
                 else:
-                    self.menu_votes[controller_id] = None  # HARD
-                self.voting_states[controller_id] = True
+                    print(f"Invalid selection {selection} for player {player_id}")
         elif action == Button.UP:
-            # Move selection up (0->1->2->0)
-            current = self.menu_selections.get(controller_id, 0)
-            self.menu_selections[controller_id] = (current - 1) % 3
+            # Move selection up with wraparound
+            current = self.menu_selections.get(controller_dip, 0)
+            self.menu_selections[controller_dip] = (current - 1) % len(Difficulty)
             # If player was in voting state, remove their vote
-            if controller_id in self.voting_states and self.voting_states[controller_id]:
-                self.voting_states[controller_id] = False
-                self.menu_votes.pop(controller_id, None)
+            if controller_dip in self.voting_states and self.voting_states[controller_dip]:
+                self.voting_states[controller_dip] = False
+                self.menu_votes.pop(controller_dip, None)
+                print(f"Player {player_id} changed selection, vote removed")
         elif action == Button.DOWN:
-            # Move selection down (0->2->1->0)
-            current = self.menu_selections.get(controller_id, 0)
-            self.menu_selections[controller_id] = (current + 1) % 3
+            # Move selection down with wraparound
+            current = self.menu_selections.get(controller_dip, 0)
+            self.menu_selections[controller_dip] = (current + 1) % len(Difficulty)
             # If player was in voting state, remove their vote
-            if controller_id in self.voting_states and self.voting_states[controller_id]:
-                self.voting_states[controller_id] = False
-                self.menu_votes.pop(controller_id, None)
-
+            if controller_dip in self.voting_states and self.voting_states[controller_dip]:
+                self.voting_states[controller_dip] = False
+                self.menu_votes.pop(controller_dip, None)
+                print(f"Player {player_id} changed selection, vote removed")
+                
     def update_game_state(self):
         """Update the game state."""
         current_time = time.monotonic()
@@ -332,9 +353,26 @@ class SnakeGame(BaseGame):
         
         # Handle menu display
         if self.menu_active:
-            controller_state_dip = controller_state.dip
-            current_selection = self.menu_selections.get(controller_state_dip, 0)
-            has_voted = self.voting_states.get(controller_state_dip, False)
+            # Get controller DIP from the controller state or find it by player_id
+            controller_dip = controller_state.dip if hasattr(controller_state, 'dip') else None
+            
+            # Find matching controller ID based on player_id if dip isn't available
+            if controller_dip is None and self.input_handler:
+                for cid, (cstate, pid) in self.input_handler.controllers.items():
+                    if pid == player_id and cstate == controller_state:
+                        controller_dip = cid
+                        break
+                        
+            if controller_dip is None:
+                # Fallback if we can't determine the controller DIP
+                controller_state.write_lcd(0, 0, "SNAKE: ERROR")
+                controller_state.write_lcd(0, 1, "CONTROLLER DIP")
+                controller_state.write_lcd(0, 2, "NOT IDENTIFIED")
+                await controller_state.commit()
+                return
+                
+            current_selection = self.menu_selections.get(controller_dip, 0)
+            has_voted = self.voting_states.get(controller_dip, False)
             
             # Calculate total players and waiting count
             total_players = 0
@@ -343,6 +381,12 @@ class SnakeGame(BaseGame):
                 total_players = len(self.input_handler.controllers)
                 waiting_count = sum(1 for v_dip in self.voting_states if self.voting_states[v_dip])
             
+            # Calculate votes for each difficulty
+            vote_counts = {d: 0 for d in Difficulty}
+            for vote_difficulty in self.menu_votes.values():
+                if vote_difficulty in vote_counts:
+                    vote_counts[vote_difficulty] += 1
+            
             # Write header
             controller_state.write_lcd(0, 0, "SNAKE: SELECT LEVEL")
             
@@ -350,23 +394,35 @@ class SnakeGame(BaseGame):
             difficulties = list(Difficulty)
             for i, diff in enumerate(difficulties):
                 marker = " "
+                
+                # Check if this is the current selection
                 if i == current_selection:
                     marker = "<"
-                elif has_voted and self.menu_votes.get(controller_state_dip) == diff:
+                    
+                # Check if this player has voted for this difficulty
+                voted_difficulty = self.menu_votes.get(controller_dip)
+                if has_voted and voted_difficulty == diff:
                     marker = "X"
+                
+                # Display difficulty name
                 controller_state.write_lcd(0, i+1, f"{diff.name}")
+                
+                # Display vote count for this difficulty
+                vote_count = vote_counts.get(diff, 0)
+                if vote_count > 0:
+                    controller_state.write_lcd(15, i+1, f"({vote_count})")
+                
+                # Display selection marker
                 controller_state.write_lcd(19, i+1, marker)
             
             # Display status
             status_text = f"Wait: {total_players - waiting_count} more" if has_voted and total_players > 0 else "SELECT to vote"
             controller_state.write_lcd(0, 4, status_text)
             
-        elif self.countdown_active:
-            controller_state.clear()
-            controller_state.write_lcd(0, 0, "SNAKE: COUNTDOWN")
-        elif self.game_over_active:
-            controller_state.clear()
-            controller_state.write_lcd(0, 0, "SNAKE: GAME OVER")
+        elif self.countdown_active or self.game_over_active:
+            # Use base implementation for countdown and game over
+            await super().update_controller_display_state(controller_state, player_id)
+            
         else:
             # Game is active, show game-specific display
             config = self.get_player_config(player_id)
@@ -387,7 +443,10 @@ class SnakeGame(BaseGame):
             controller_state.write_lcd(0, 0, "SNAKE GAME")
             controller_state.write_lcd(0, 1, f"TEAM: {team.name}")
             controller_state.write_lcd(0, 2, f"LENGTH: {snake_length}")
-            controller_state.write_lcd(0, 3, f"DIFFICULTY: {self.difficulty.name}")
+            if hasattr(self, 'difficulty') and self.difficulty:
+                controller_state.write_lcd(0, 3, f"DIFFICULTY: {self.difficulty.name}")
+            else:
+                controller_state.write_lcd(0, 3, "HOLD SELECT to EXIT")
         
         # Commit the changes
         await controller_state.commit()
