@@ -163,9 +163,16 @@ class GameScene(Scene):
                 self.current_game = self
                 self.menu_active = True
                 self.game_started = False
-                # Reset selection
+                self.countdown_active = False
+                self.countdown_value = None
+                # Reset all menu-related state
                 self.menu_selections = {}
+                self.menu_votes = {}
                 self.voting_states = {}
+                # Re-register button callbacks for the menu
+                if self.input_handler:
+                    for controller_id in self.input_handler.controllers:
+                        self.input_handler.register_button_callback(controller_id, self.handle_button_event)
             else:
                 self.current_game.reset_game()
         else:
