@@ -71,6 +71,10 @@ class GameScene(Scene):
             self.input_handler = None # Ensure it's None on failure
         else:
             print("GameScene: ControllerInputHandler initialized successfully.")
+            
+            # Register this GameScene to receive button callbacks
+            for controller_id in self.input_handler.controllers:
+                self.input_handler.register_button_callback(controller_id, self.handle_button_event)
         
         self.last_update_time = 0
         self.last_countdown_time = 0
@@ -447,27 +451,6 @@ class GameScene(Scene):
                             self.countdown_active = False
                             self.game_started = True
 
-                # Process controller inputs
-                input_event = self.input_handler.get_direction_key()
-                while input_event:  # Process all pending events
-                    player_id, button, button_state = input_event
-                    print(f"Input event: {player_id}, {button}, {button_state}")
-                    
-                    if self.game_started and not self.game_over_active and self.current_game != self:
-                        if hasattr(self.current_game, 'handle_button_event'):
-                            # Use new-style button event handling
-                            self.current_game.handle_button_event(player_id, button, button_state)
-                        else:
-                            # Fall back to old-style input processing for backward compatibility
-                            self.process_player_input(player_id, button)
-                    elif self.menu_active:
-                        # Use menu input processing only if button was pressed (not held/released)
-                        if button_state == ButtonState.PRESSED:
-                            self.process_menu_input(player_id, button)
-                    
-                    # Get next event
-                    input_event = self.input_handler.get_direction_key()
-
                 # Update game state if started and not in menu/countdown
                 if self.game_started and not self.game_over_active and self.current_game != self:
                     self.current_game.update_game_state()
@@ -606,4 +589,20 @@ class GameScene(Scene):
         """Clean up resources."""
         print("Cleaning up game...")
         if self.input_handler:
-            self.input_handler.stop() 
+            self.input_handler.stop()
+
+    def handle_button_event(self, player_id, button, button_state):
+        """Handle button events from the controllers.
+        
+        This is called via the callback system when buttons change state.
+        """
+        if self.menu_active and button_state == ButtonState.PRESSED:
+            # Handle menu inputs only on button press
+            self.process_menu_input(player_id, button)
+        elif self.game_started and not self.game_over_active and self.current_game != self:
+            # Forward to current game if we have one
+            if hasattr(self.current_game, 'handle_button_event'):
+                self.current_game.handle_button_event(player_id, button, button_state)
+            else:
+                # Fall back to old-style process_player_input
+                self.process_player_input(player_id, button, button_state) 

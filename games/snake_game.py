@@ -2,7 +2,6 @@ from games.util.base_game import BaseGame, PlayerID, TeamID, Difficulty, RGB
 from collections import deque
 import random
 import time
-import traceback
 from games.util.game_util import ControllerInputHandler, Button, Direction, ButtonState
 
 class SnakeGame(BaseGame):
@@ -362,10 +361,12 @@ class SnakeGame(BaseGame):
             status_text = f"Wait: {total_players - waiting_count} more" if has_voted and total_players > 0 else "SELECT to vote"
             controller_state.write_lcd(0, 4, status_text)
             
-        elif self.countdown_active or self.game_over_active:
-            # Use base implementation for countdown and game over
-            await super().update_display(controller_state, player_id)
-            
+        elif self.countdown_active:
+            controller_state.clear()
+            controller_state.write_lcd(0, 0, "SNAKE: COUNTDOWN")
+        elif self.game_over_active:
+            controller_state.clear()
+            controller_state.write_lcd(0, 0, "SNAKE: GAME OVER")
         else:
             # Game is active, show game-specific display
             config = self.get_player_config(player_id)
@@ -395,9 +396,6 @@ class SnakeGame(BaseGame):
         """Process input from a player."""
         if self.game_over_active:
             return
-        
-        print(f"Processing player input for player {player_id}; action: {action}; button_state: {button_state}; traceback:")
-        traceback.print_stack()
         
         if button_state == ButtonState.RELEASED:
             # Ignore button releases

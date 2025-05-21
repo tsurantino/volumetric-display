@@ -214,9 +214,7 @@ class ControllerInputHandler:
                         'is_counting_down': True
                     }
                 
-                # Add to event queue with button state
-                with self._lock:
-                    self.event_queue.append((player_id, button, ButtonState.PRESSED))
+                # NOTE: No longer adding to event queue - using callbacks exclusively
             
             elif not buttons[button_idx] and last_buttons[button_idx]:
                 # Button was just released
@@ -227,15 +225,13 @@ class ControllerInputHandler:
                     hold_time = time.monotonic() - self.select_hold_data[controller_id]['start_time']
                     self.select_hold_data[controller_id]['is_counting_down'] = False
                 
-                # Add to event queue with button state
-                with self._lock:
-                    self.event_queue.append((player_id, button, ButtonState.RELEASED))
+                # NOTE: No longer adding to event queue - using callbacks exclusively
             
             elif buttons[button_idx]:
                 # Button is being held down
                 self._handle_button_event(controller_id, player_id, button, ButtonState.HELD)
                 
-                # We don't add HELD events to the queue to avoid flooding it
+                # We don't add HELD events to the queue
 
         # Store the new state
         self.last_button_states[controller_id] = list(buttons)
