@@ -115,9 +115,9 @@ class Raster:
             x, y, z: Original coordinates
             color: RGB color to set
         """
-        assert x >= 0 and x < self.width
-        assert y >= 0 and y < self.height
-        assert z >= 0 and z < self.length
+        assert x >= 0 and x < self.width, f"x: {x} width: {self.width}"
+        assert y >= 0 and y < self.height, f"y: {y} height: {self.height}"
+        assert z >= 0 and z < self.length, f"z: {z} length: {self.length}"
 
         # Transform coordinates
         tx, ty, tz = self._transform_coords(x, y, z)

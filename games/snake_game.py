@@ -84,6 +84,7 @@ class SnakeGame(BaseGame):
         }
         self.last_step_time = 0  # Track last game step update
         self.step_rate = 3  # Default to 3 steps per second (MEDIUM/HARD)
+        self.max_score = 1
         
         # Menu-related attributes
         self.menu_active = True
@@ -124,7 +125,7 @@ class SnakeGame(BaseGame):
         self.place_new_apple()
 
         self.game_over_active = False
-        self.game_over_flash_state = {'count': 0, 'timer': 0, 'interval': 0.2, 'border_on': False}
+        self.game_over_flash_state = {'count': 0, 'timer': 0, 'interval': 0.2, 'border_on': False, 'border_color': RGB(255, 0, 0)}
         self.last_step_time = 0
         self.step_rate = 3  # Reset to default step rate
         self.game_started = False  # Reset game started state
@@ -289,7 +290,10 @@ class SnakeGame(BaseGame):
             if current_time - self.game_over_flash_state['timer'] >= self.game_over_flash_state['interval']:
                 self.game_over_flash_state['timer'] = current_time
                 self.game_over_flash_state['border_on'] = not self.game_over_flash_state['border_on']
-                self.game_over_flash_state['count'] += 1
+                if self.game_over_flash_state['count'] <= 0:
+                    self.game_over_flash_state['border_on'] = False
+                else:
+                    self.game_over_flash_state['count'] -= 1
 
     def render_game_state(self, raster):
         """Render the game state to the raster."""
@@ -364,7 +368,7 @@ class SnakeGame(BaseGame):
 
         # Draw game over border
         if self.game_over_active and self.game_over_flash_state['border_on']:
-            border_color = RGB(255, 0, 0)  # Red border
+            border_color = self.game_over_flash_state['border_color']
             for x in range(raster.width):
                 for y in range(raster.height):
                     for z in range(raster.length):
@@ -376,7 +380,7 @@ class SnakeGame(BaseGame):
     async def update_controller_display_state(self, controller_state, player_id):
         """Update the controller display for this player."""
         # Clear the display first
-        await controller_state.clear_lcd()
+        controller_state.clear()
         
         # Handle menu display
         if self.menu_active:
@@ -566,10 +570,11 @@ class SnakeGame(BaseGame):
                 snake.length = 0
                 self.game_over_active = True
                 self.game_over_flash_state = {
-                    'count': 10,  # 5 flashes (on/off)
+                    'count': 20,  # 5 flashes (on/off)
                     'timer': 0,
                     'interval': 0.2,
-                    'border_on': False
+                    'border_on': False,
+                    'border_color': RGB(255, 0, 0),
                 }
                 return False
             else:
@@ -586,6 +591,18 @@ class SnakeGame(BaseGame):
                         snake.direction = (1, 0, 0)  # Default direction
                         break
                 return True
+        
+        # If a snake has exceeded the max score, set the game over active
+        if snake.score >= self.max_score:
+            self.game_over_active = True
+            self.game_over_flash_state = {
+                'count': 20,  # 5 flashes (on/off)
+                'timer': 0,
+                'interval': 0.2,
+                'border_on': False,
+                'border_color': RGB(0, 255, 0),
+            }
+            return False
 
         # Move snake
         snake.body.insert(0, new_head)

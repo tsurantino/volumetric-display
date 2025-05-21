@@ -103,7 +103,7 @@ class BlinkyGame(BaseGame):
     async def update_controller_display_state(self, controller_state, player_id):
         """Update the controller display for this player."""
         # Clear the display first
-        await controller_state.clear_lcd()
+        controller_state.clear()
             
         # Game-specific display
         player_color = PLAYER_TO_COLOR.get(player_id, RGB(255, 255, 255))

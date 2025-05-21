@@ -65,7 +65,7 @@ class DisplayManager:
                 await game_state.update_display(controller_state, player_id)
             else:
                 # Fallback for any types that don't have display update methods
-                await controller_state.clear_lcd()
+                controller_state.clear()
                 controller_state.write_lcd(0, 0, "ARTNET DISPLAY")
                 controller_state.write_lcd(0, 1, "Display Error")
                 if hasattr(game_state, '__class__') and hasattr(game_state.__class__, '__name__'):

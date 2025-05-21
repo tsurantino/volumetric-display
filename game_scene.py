@@ -2,6 +2,7 @@ from artnet import Scene, RGB
 from games.util.game_util import ControllerInputHandler, Button, Direction, ButtonState
 import time
 import random
+import math
 from enum import Enum
 import importlib.util
 import os
@@ -18,6 +19,7 @@ class GameScene(Scene):
         self.menu_frame_rate = 30 
         self.config = config
         self.game_started = False  # Initialize game_started attribute
+        self.button_pressed = False
 
         # Initialize menu-related attributes
         self.menu_selections = {}  # Maps controller_id to their current selection
@@ -213,7 +215,7 @@ class GameScene(Scene):
         """Update the controller's LCD display for this player."""
         
         # Clear the display first
-        await controller_state.clear_lcd()
+        controller_state.clear()
 
         # Handling display for GameScene (Game Selection Menu & Countdown)
         if self.menu_active:
@@ -342,40 +344,94 @@ class GameScene(Scene):
                     raster.set_pix(x, y, z, RGB(0, 0, 0))
                     
         # When in menu mode, render a rotating cube in the center
-        if self.menu_active:
-            size = 5
+        if self.menu_active or self.countdown_active and self.countdown_value > 3:
+            if self.countdown_active:
+                scale = max(self.scale_down_time + 1 - time.monotonic(), 0)
+            else:
+                scale = 1
+            # Initialize rotation state if not exists
+            if not hasattr(self, '_cube_rot_state'):
+                self._cube_rot_state = {
+                    'angles': [0, 0, 0],  # x, y, z angles
+                    'velocities': [0.2, 0.3, 0.1],  # Angular velocities
+                    'size': 5.0,  # Current size
+                    'target_size': 5.0,  # Target size
+                    'size_velocity': 0.0,  # Size change velocity
+                    'last_time': time.monotonic()
+                }
+            
+            state = self._cube_rot_state
+            current_time = time.monotonic()
+            dt = current_time - state['last_time']
+            state['last_time'] = current_time
+
+            # Update rotation angles with varying velocities
+            for i in range(3):
+                state['angles'][i] = (state['angles'][i] + state['velocities'][i] * dt) % (2 * math.pi)
+                # Slowly vary velocities with noise
+                state['velocities'][i] += (random.random() - 0.5) * 0.1 * dt
+                state['velocities'][i] = max(min(state['velocities'][i], 0.5), -0.5)
+
+            # Spring physics for size
+            spring_k = 30.0  # Spring constant
+            damping = 4.0    # Damping factor
+            
+            # Calculate spring force
+            spring_force = (state['target_size'] - state['size']) * spring_k
+            # Apply damping
+            damping_force = -state['size_velocity'] * damping
+            # Update size
+            state['size_velocity'] += (spring_force + damping_force) * dt
+            state['size'] += state['size_velocity'] * dt
+
+            # Check for new inputs to add "kicks"
+            if self.input_handler:
+                for controller_id, (controller_state, _) in self.input_handler.controllers.items():
+                    if self.button_pressed:
+                        self.button_pressed = False
+                        # Add rotational kick
+                        for i in range(3):
+                            state['velocities'][i] += (random.random() - 0.5) * 6.0
+                        # Compress the cube
+                        state['target_size'] = 4.0
+                        state['size_velocity'] += 10.0
+                    else:
+                        state['target_size'] = 5.0
+
             center_x = self.width // 2
             center_y = self.height // 2
             center_z = self.length // 2
             
-            # Calculate rotation based on time
-            import math
-            angle = (time.monotonic() * 0.5) % (2 * math.pi)
-            sin_angle = math.sin(angle)
-            cos_angle = math.cos(angle)
-            
             # Define cube points
             points = []
-            for x in range(-size, size + 1, size):
-                for y in range(-size, size + 1, size):
-                    for z in range(-size, size + 1, size):
-                        if (x == -size or x == size or
-                            y == -size or y == size or
-                            z == -size or z == size):
-                            # Rotate around Y axis
-                            rotated_x = x * cos_angle - z * sin_angle
-                            rotated_z = x * sin_angle + z * cos_angle
-                            
-                            # Add to center
-                            px = int(center_x + rotated_x)
-                            py = int(center_y + y)
-                            pz = int(center_z + rotated_z)
-                            
-                            # Check bounds
-                            if (0 <= px < self.width and
-                                0 <= py < self.height and
-                                0 <= pz < self.length):
-                                points.append((px, py, pz))
+            size = state['size'] * scale
+            for x in range(-1, 2, 1):
+                for y in range(-1, 2, 1):
+                    for z in range(-1, 2, 1):
+                        # Scale points by size
+                        px, py, pz = x * size, y * size, z * size
+                        
+                        # Apply all rotations using rotation matrices
+                        for axis, angle in enumerate(state['angles']):
+                            if axis == 0:  # X rotation
+                                py, pz = (py * math.cos(angle) - pz * math.sin(angle),
+                                        py * math.sin(angle) + pz * math.cos(angle))
+                            elif axis == 1:  # Y rotation
+                                px, pz = (px * math.cos(angle) - pz * math.sin(angle),
+                                        px * math.sin(angle) + pz * math.cos(angle))
+                            else:  # Z rotation
+                                px, py = (px * math.cos(angle) - py * math.sin(angle),
+                                        px * math.sin(angle) + py * math.cos(angle))
+                        
+                        # Add to center and convert to integer coordinates
+                        screen_x = int(center_x + px)
+                        screen_y = int(center_y + py)
+                        screen_z = int(center_z + pz)
+                        
+                        if (0 <= screen_x < self.width and
+                            0 <= screen_y < self.height and
+                            0 <= screen_z < self.length):
+                            points.append((screen_x, screen_y, screen_z))
             
             # Render cube with different colors based on vote counts
             if self.available_games:
@@ -410,19 +466,19 @@ class GameScene(Scene):
                 # Draw a "3" in bright blue
                 for x in range(-2, 3):
                     for y in range(-5, 6):
-                        if (x == -2 or x == 2 or y == -5 or y == 5 or y == 0):
-                            raster.set_pix(center_x + x, center_y + y, center_z, RGB(0, 128, 255))
+                        if (x == -2 or y == -5 or y == 5 or y == 0):
+                            raster.set_pix(center_x + x, center_y, center_z + y, RGB(0, 128, 255))
             elif digit == 2:
                 # Draw a "2" in bright green
                 for x in range(-2, 3):
                     for y in range(-5, 6):
                         if (y == -5 or y == 5 or y == 0 or 
                             (x == 2 and y < 0) or (x == -2 and y > 0)):
-                            raster.set_pix(center_x + x, center_y + y, center_z, RGB(0, 255, 128))
+                            raster.set_pix(center_x + x, center_y, center_z + y, RGB(0, 255, 128))
             elif digit == 1:
                 # Draw a "1" in bright red
                 for y in range(-5, 6):
-                    raster.set_pix(center_x, center_y + y, center_z, RGB(255, 0, 0))
+                    raster.set_pix(center_x, center_y, center_z + y, RGB(255, 0, 0))
                     
     def render(self, raster, current_time):
         """Render the game state."""
@@ -481,7 +537,7 @@ class GameScene(Scene):
         raster.clear()
 
         # Render game state - make sure we handle the case where current_game is self
-        if self.current_game != self and self.current_game:
+        if self.current_game != self and self.current_game and not self.countdown_active:
             self.current_game.render_game_state(raster)
         else:
             self.render_game_state(raster)
@@ -547,8 +603,9 @@ class GameScene(Scene):
             # Start countdown
             self.menu_active = False
             self.countdown_active = True
-            self.countdown_value = 3
+            self.countdown_value = 4
             self.last_countdown_time = current_time
+            self.scale_down_time = time.monotonic()
             self.input_handler.clear_all_select_holds()
             
         except Exception as e:
@@ -571,6 +628,8 @@ class GameScene(Scene):
         if controller_dip is None:
             print(f"Warning: Could not find controller for player {player_id}")
             return
+        
+        self.button_pressed = True
         
         if action == Button.SELECT:
             if controller_dip in self.voting_states and self.voting_states[controller_dip]:
