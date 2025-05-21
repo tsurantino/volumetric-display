@@ -159,7 +159,15 @@ class GameScene(Scene):
     def reset_game(self):
         """Reset the game state."""
         if self.current_game:
-            self.current_game.reset_game()
+            if self.current_game.menu_active:
+                self.current_game = self
+                self.menu_active = True
+                self.game_started = False
+                # Reset selection
+                self.menu_selections = {}
+                self.voting_states = {}
+            else:
+                self.current_game.reset_game()
         else:
             # Initialize with first available game
             if self.available_games:

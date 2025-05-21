@@ -6,6 +6,43 @@ import time
 from dataclasses import dataclass
 from typing import List, Dict, Tuple
 
+
+# Configuration mapping player roles to their team and view orientation
+PLAYER_CONFIG = {
+    PlayerID.BLUE_P1: {
+        'team': TeamID.BLUE,
+        'view': (-1, 0, 0),  # -X view
+        'left_dir': (0, -1, 0),  # -Y
+        'right_dir': (0, 1, 0),  # +Y
+        'up_dir': (0, 0, 1),    # +Z
+        'down_dir': (0, 0, -1), # -Z
+    },
+    PlayerID.BLUE_P2: {
+        'team': TeamID.BLUE,
+        'view': (0, -1, 0),  # -Y view
+        'left_dir': (1, 0, 0),  # +X
+        'right_dir': (-1, 0, 0), # -X
+        'up_dir': (0, 0, 1),    # +Z
+        'down_dir': (0, 0, -1), # -Z
+    },
+    PlayerID.ORANGE_P1: {
+        'team': TeamID.ORANGE,
+        'view': (1, 0, 0),   # +X view
+        'left_dir': (0, 1, 0),  # +Y
+        'right_dir': (0, -1, 0), # -Y
+        'up_dir': (0, 0, 1),    # +Z
+        'down_dir': (0, 0, -1), # -Z
+    },
+    PlayerID.ORANGE_P2: {
+        'team': TeamID.ORANGE,
+        'view': (0, 1, 0),   # +Y view
+        'left_dir': (-1, 0, 0), # -X
+        'right_dir': (1, 0, 0),  # +X
+        'up_dir': (0, 0, 1),    # +Z
+        'down_dir': (0, 0, -1), # -Z
+    }
+}
+
 @dataclass
 class Sphere:
     x: float  # position
@@ -156,7 +193,7 @@ class SphereShooterGame(BaseGame):
 
         # Initialize cannons for each player
         for player_id in PlayerID:
-            config = self.get_player_config(player_id)
+            config = PLAYER_CONFIG[player_id]
             team = config['team']
             view = config['view']
             
@@ -180,14 +217,14 @@ class SphereShooterGame(BaseGame):
 
     def get_player_score(self, player_id):
         """Get the score for a player."""
-        config = self.get_player_config(player_id)
+        config = PLAYER_CONFIG[player_id]
         team = config['team']
         # Count spheres that are still in play
         return sum(1 for sphere in self.spheres if sphere.team == team)
 
     def get_opponent_score(self, player_id):
         """Get the score for a player's opponent."""
-        config = self.get_player_config(player_id)
+        config = PLAYER_CONFIG[player_id]
         team = config['team']
         opponent_team = TeamID.ORANGE if team == TeamID.BLUE else TeamID.BLUE
         return sum(1 for sphere in self.spheres if sphere.team == opponent_team)
@@ -317,9 +354,9 @@ class SphereShooterGame(BaseGame):
         sphere = Sphere(
             x=x, y=y, z=z,
             vx=vx, vy=vy, vz=vz,
-            radius=3.0,
+            radius=2.0,
             birth_time=time.monotonic(),
-            lifetime=30.0,  # Spheres last 30 seconds
+            lifetime=15.0,  # Spheres last 15 seconds
             color=cannon.color,
             team=cannon.team,
             mass=1.0
@@ -353,7 +390,7 @@ class SphereShooterGame(BaseGame):
                             (voxel_center_z - sphere.z)**2
                         )
 
-                        if int(dist_sq) == int(sphere.radius**2):
+                        if dist_sq <= sphere.radius**2:
                             if (0 <= vx < self.width and 
                                 0 <= vy < self.height and 
                                 0 <= vz < self.length):
@@ -411,7 +448,7 @@ class SphereShooterGame(BaseGame):
             super().update_display(controller_state, player_id)
             return
             
-        config = self.get_player_config(player_id)
+        config = PLAYER_CONFIG[player_id]
         team_name = config['team'].name
         
         # Get the player's cannon
@@ -429,7 +466,7 @@ class SphereShooterGame(BaseGame):
             
             # Create a charging progress bar
             charge_bar = ""
-            bar_length = 20
+            bar_length = 18
             filled = int(charge_percent / 100 * bar_length)
             charge_bar = "[" + "#" * filled + "-" * (bar_length - filled) + "]"
             
