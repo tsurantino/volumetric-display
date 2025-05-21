@@ -2,7 +2,71 @@ from games.util.base_game import BaseGame, PlayerID, TeamID, Difficulty, RGB
 from collections import deque
 import random
 import time
-from games.util.game_util import ControllerInputHandler, Button, Direction, ButtonState
+from games.util.game_util import Button, Direction, ButtonState
+
+# Configuration mapping player roles to their team and view orientation
+PLAYER_CONFIG = {
+    PlayerID.BLUE_P1: {
+        'team': TeamID.BLUE,
+        'view': (-1, 0, 0),  # -X view
+        'left_dir': (0, -1, 0),  # -Y
+        'right_dir': (0, 1, 0),  # +Y
+        'up_dir': (0, 0, 1),    # +Z
+        'down_dir': (0, 0, -1), # -Z
+    },
+    PlayerID.BLUE_P2: {
+        'team': TeamID.BLUE,
+        'view': (0, -1, 0),  # -Y view
+        'left_dir': (1, 0, 0),  # +X
+        'right_dir': (-1, 0, 0), # -X
+        'up_dir': (0, 0, 1),    # +Z
+        'down_dir': (0, 0, -1), # -Z
+    },
+    PlayerID.ORANGE_P1: {
+        'team': TeamID.ORANGE,
+        'view': (1, 0, 0),   # +X view
+        'left_dir': (0, 1, 0),  # +Y
+        'right_dir': (0, -1, 0), # -Y
+        'up_dir': (0, 0, 1),    # +Z
+        'down_dir': (0, 0, -1), # -Z
+    },
+    PlayerID.ORANGE_P2: {
+        'team': TeamID.ORANGE,
+        'view': (0, 1, 0),   # +Y view
+        'left_dir': (-1, 0, 0), # -X
+        'right_dir': (1, 0, 0),  # +X
+        'up_dir': (0, 0, 1),    # +Z
+        'down_dir': (0, 0, -1), # -Z
+    }
+}
+
+class RainbowExplosion:
+    def __init__(self, position, time):
+        self.position = position
+        self.birth_time = time
+        self.lifetime = 1.0  # Explosion lasts 1 second
+        self.radius = 0
+        self.max_radius = 5
+
+    def is_expired(self, current_time):
+        return current_time - self.birth_time > self.lifetime
+
+    def get_current_radius(self, current_time):
+        age = current_time - self.birth_time
+        if age < self.lifetime:
+            # Expand from 0 to max_radius over lifetime
+            return self.max_radius * (age / self.lifetime)
+        return 0
+
+class SnakeData:
+    def __init__(self, id, color, start_pos, start_dir):
+        self.id = id
+        self.color = color
+        self.body = [start_pos]
+        self.direction = start_dir
+        self.length = 3
+        self.score = 0
+
 
 class SnakeGame(BaseGame):
     def __init__(self, width=20, height=20, length=20, frameRate=30, config=None, input_handler=None):
@@ -12,8 +76,8 @@ class SnakeGame(BaseGame):
         self.length = length // self.thickness
         super().__init__(width, height, length, frameRate, config=config, input_handler=input_handler)
         self.snakes = {}  # Maps player_id to snake body (deque of positions)
-        self.food = None
-        self.food_color = RGB(255, 0, 0)  # Red food
+        self.apple = None
+        self.apple_color = RGB(0, 255, 0)  # Green food
         self.snake_colors = {
             TeamID.BLUE: RGB(0, 0, 255),    # Blue snake
             TeamID.ORANGE: RGB(255, 165, 0)  # Orange snake
@@ -31,13 +95,34 @@ class SnakeGame(BaseGame):
         self.voting_states = {}  # Maps controller_id to whether they have voted
         self.last_countdown_time = 0
         self.game_started = False  # Track whether the game has started
+
+        self.explosions = []
         
         self.reset_game()
 
     def reset_game(self):
         """Reset the game state."""
-        self.snakes = {}
-        self.food = None
+        # Initialize blue snake
+        blue_start = (self.width//8, self.length//4, self.height//4)
+        self.snakes = {
+            TeamID.BLUE: SnakeData('blue', RGB(255, 0, 0), blue_start, (1, 0, 0))
+        }
+
+        # Initialize orange snake
+        orange_start = (3*self.width//8, self.length//4, self.height//4)
+        self.snakes[TeamID.ORANGE] = SnakeData('orange',RGB(255, 165, 0), orange_start, (-1, 0, 0))
+
+        # Set initial lengths
+        self.snakes[TeamID.BLUE].length = 3
+        self.snakes[TeamID.ORANGE].length = 3
+
+        # Reset scores
+        self.snakes[TeamID.BLUE].score = 0
+        self.snakes[TeamID.ORANGE].score = 0
+
+        # Place first apple
+        self.place_new_apple()
+
         self.game_over_active = False
         self.game_over_flash_state = {'count': 0, 'timer': 0, 'interval': 0.2, 'border_on': False}
         self.last_step_time = 0
@@ -51,66 +136,24 @@ class SnakeGame(BaseGame):
         self.menu_votes.clear()
         self.voting_states.clear()
 
-        # Initialize snakes for each player
-        for player_id in PlayerID:
-            config = self.get_player_config(player_id)
-            team = config['team']
-            view = config['view']
-            
-            # Start position based on view direction
-            if view[0] != 0:  # X view
-                start_x = 0 if view[0] < 0 else self.width - 1
-                start_y = self.height // 2
-                start_z = self.length // 2
-                direction = (-view[0], 0, 0)  # Move in opposite direction of view
-            else:  # Y view
-                start_x = self.width // 2
-                start_y = 0 if view[1] < 0 else self.height - 1
-                start_z = self.length // 2
-                direction = (0, -view[1], 0)  # Move in opposite direction of view
-
-            # Initialize snake with 3 segments
-            snake = deque()
-            for i in range(3):
-                pos = (
-                    start_x + direction[0] * i,
-                    start_y + direction[1] * i,
-                    start_z + direction[2] * i
-                )
-                snake.append(pos)
-            self.snakes[player_id] = snake
-
         # Spawn initial food
-        self.spawn_food()
-
-    def spawn_food(self):
-        """Spawn food at a random location."""
-        while True:
-            x = random.randint(0, self.width - 1)
-            y = random.randint(0, self.height - 1)
-            z = random.randint(0, self.length - 1)
-            pos = (x, y, z)
-            
-            # Check if position is not occupied by any snake
-            if not any(pos in snake for snake in self.snakes.values()):
-                self.food = pos
-                break
+        self.place_new_apple()
 
     def get_player_score(self, player_id):
         """Get the score for a player."""
-        return len(self.snakes[player_id])
+        return len(self.snakes[PLAYER_CONFIG[player_id]['team']].body)
 
     def get_opponent_score(self, player_id):
         """Get the score for a player's opponent."""
-        config = self.get_player_config(player_id)
+        config = PLAYER_CONFIG[player_id]
         team = config['team']
         opponent_team = TeamID.ORANGE if team == TeamID.BLUE else TeamID.BLUE
         
         # Sum up scores of all players on the opponent's team
         total_score = 0
-        for pid, snake in self.snakes.items():
-            if self.get_player_config(pid)['team'] == opponent_team:
-                total_score += len(snake)
+        for team_id, snake in self.snakes.items():
+            if team_id == opponent_team:
+                total_score += len(snake.body)
         return total_score
 
     def select_difficulty(self):
@@ -237,50 +280,9 @@ class SnakeGame(BaseGame):
         if self.game_started and not self.game_over_active:
             if current_time - self.last_step_time >= 1.0/self.step_rate:
                 self.last_step_time = current_time
-                # Update all snakes
-                for player_id in PlayerID:
-                    if player_id in self.snakes:
-                        snake = self.snakes[player_id]
-                        if len(snake) > 1:
-                            head = snake[0]
-                            # Get current direction
-                            current_dir = (
-                                head[0] - snake[1][0],
-                                head[1] - snake[1][1],
-                                head[2] - snake[1][2]
-                            )
-                            # Calculate new head position
-                            new_head = (
-                                head[0] + current_dir[0],
-                                head[1] + current_dir[1],
-                                head[2] + current_dir[2]
-                            )
-                            # Check for collisions
-                            if (new_head[0] < 0 or new_head[0] >= self.width or
-                                new_head[1] < 0 or new_head[1] >= self.height or
-                                new_head[2] < 0 or new_head[2] >= self.length):
-                                self.game_over_active = True
-                                return
 
-                            # Check for self-collision
-                            if new_head in snake:
-                                self.game_over_active = True
-                                return
-
-                            # Check for collision with other snakes
-                            for other_id, other_snake in self.snakes.items():
-                                if other_id != player_id and new_head in other_snake:
-                                    self.game_over_active = True
-                                    return
-
-                            # Move snake
-                            snake.appendleft(new_head)
-
-                            # Check for food collision
-                            if new_head == self.food:
-                                self.spawn_food()
-                            else:
-                                snake.pop()
+                self.update_snake(TeamID.BLUE)
+                self.update_snake(TeamID.ORANGE)
 
         # Update game over flash state (this can run at frame rate)
         if self.game_over_active:
@@ -297,9 +299,39 @@ class SnakeGame(BaseGame):
                 for z in range(raster.length):
                     raster.set_pix(x, y, z, RGB(0, 0, 0))  # Black background
 
+        current_time = time.monotonic()
+
+        # Draw explosions
+        active_explosions = []
+        for explosion in self.explosions:
+            if not explosion.is_expired(current_time):
+                active_explosions.append(explosion)
+                radius = explosion.get_current_radius(current_time)
+                x, y, z = explosion.position
+                x *= self.thickness
+                y *= self.thickness
+                z *= self.thickness
+                
+                # Draw rainbow shell
+                for dx in range(-int(radius), int(radius) + 1):
+                    for dy in range(-int(radius), int(radius) + 1):
+                        for dz in range(-int(radius), int(radius) + 1):
+                            # Only draw points on the shell
+                            if abs(math.sqrt(dx*dx + dy*dy + dz*dz) - radius) < 0.5:
+                                nx = x + dx
+                                ny = y + dy
+                                nz = z + dz
+                                if (0 <= nx < raster.width and 
+                                    0 <= ny < raster.height and 
+                                    0 <= nz < raster.length):
+                                    # Create rainbow color based on position
+                                    hue = ((dx + dy + dz) * 4 + current_time * 50) % 256
+                                    raster.set_pix(nx, ny, nz, RGB.from_hsv(HSV(hue, 255, 255)))
+        self.explosions = active_explosions
+
         # Draw food
-        if self.food:
-            x, y, z = self.food
+        if self.apple:
+            x, y, z = self.apple
             x *= self.thickness
             y *= self.thickness
             z *= self.thickness
@@ -309,20 +341,15 @@ class SnakeGame(BaseGame):
                         if (x+dx < raster.width and 
                             y+dy < raster.height and 
                             z+dz < raster.length):
-                            raster.set_pix(x+dx, y+dy, z+dz, self.food_color)
+                            raster.set_pix(x+dx, y+dy, z+dz, self.apple_color)
 
         # Draw snakes
-        for player_id, snake in self.snakes.items():
+        for team_id, snake in self.snakes.items():
             # Get player's team
-            config = self.get_player_config(player_id)
-            if not config or 'team' not in config:
-                continue
-                
-            team = config['team']
-            snake_color = self.snake_colors.get(team, RGB(255, 255, 255))
+            snake_color = self.snake_colors.get(team_id, RGB(255, 255, 255))
             
             # Draw all segments
-            for segment in snake:
+            for segment in snake.body:
                 x, y, z = segment
                 x *= self.thickness
                 y *= self.thickness
@@ -419,34 +446,45 @@ class SnakeGame(BaseGame):
             status_text = f"Wait: {total_players - waiting_count} more" if has_voted and total_players > 0 else "SELECT to vote"
             controller_state.write_lcd(0, 4, status_text)
             
-        elif self.countdown_active or self.game_over_active:
-            # Use base implementation for countdown and game over
-            await super().update_controller_display_state(controller_state, player_id)
-            
-        else:
-            # Game is active, show game-specific display
-            config = self.get_player_config(player_id)
-            if not config:
-                controller_state.write_lcd(0, 0, "SNAKE GAME")
-                controller_state.write_lcd(0, 1, "NO PLAYER CONFIG")
-                controller_state.write_lcd(0, 3, "Hold SELECT to EXIT")
-                await controller_state.commit()
-                return
-                
-            # Get player's snake and length
-            team = config['team']
-            snake_length = 0
-            if player_id in self.snakes:
-                snake_length = len(self.snakes[player_id])
-                
-            # Display game info
-            controller_state.write_lcd(0, 0, "SNAKE GAME")
-            controller_state.write_lcd(0, 1, f"TEAM: {team.name}")
-            controller_state.write_lcd(0, 2, f"LENGTH: {snake_length}")
+        elif self.countdown_active:
+            # Default countdown display
+            difficulty_text = ""
             if hasattr(self, 'difficulty') and self.difficulty:
-                controller_state.write_lcd(0, 3, f"DIFFICULTY: {self.difficulty.name}")
-            else:
-                controller_state.write_lcd(0, 3, "HOLD SELECT to EXIT")
+                difficulty_text = f"{self.difficulty.name}"
+            
+            controller_state.write_lcd(0, 0, f"{self.__class__.__name__.replace('Game', '')}")
+            if difficulty_text:
+                controller_state.write_lcd(0, 1, difficulty_text)
+            controller_state.write_lcd(0, 2, f"GET READY! {self.countdown_value}...")
+            controller_state.write_lcd(0, 3, "Hold SELECT to EXIT")
+        elif self.game_over_active:
+            # Default game over display
+            score = self.get_player_score(player_id)
+            other_score = self.get_opponent_score(player_id)
+            result = "DRAW"
+            if score > other_score: 
+                result = "WIN! :)"
+            elif score < other_score: 
+                result = "LOSE :("
+            
+            config = PLAYER_CONFIG[player_id]
+            team_name = config['team'].name if config and 'team' in config else "NO TEAM"
+            
+            controller_state.write_lcd(0, 0, f"GAME OVER! YOU {result}")
+            controller_state.write_lcd(0, 1, f"TEAM {team_name}: {score}")
+            controller_state.write_lcd(0, 2, f"OPPONENT: {other_score}")
+            controller_state.write_lcd(0, 3, "Hold SELECT to EXIT")
+        else:
+            # Default in-game display
+            config = PLAYER_CONFIG[player_id]
+            team_name = config['team'].name if config and 'team' in config else "NO TEAM"
+            score = self.get_player_score(player_id)
+            other_score = self.get_opponent_score(player_id)
+            
+            controller_state.write_lcd(0, 0, f"TEAM: {team_name}")
+            controller_state.write_lcd(0, 1, f"SCORE:    {score}")
+            controller_state.write_lcd(0, 2, f"OPPONENT: {other_score}")
+            controller_state.write_lcd(0, 3, "Hold SELECT to EXIT")
         
         # Commit the changes
         await controller_state.commit()
@@ -467,69 +505,111 @@ class SnakeGame(BaseGame):
         if not self.game_started:
             return
 
-        config = self.get_player_config(player_id)
-        snake = self.snakes[player_id]
-        head = snake[0]
+        print(f"Processing input for player {player_id}: {action}")
 
-        # Get current direction
-        if len(snake) > 1:
-            current_dir = (
-                head[0] - snake[1][0],
-                head[1] - snake[1][1],
-                head[2] - snake[1][2]
-            )
-        else:
-            # If snake is length 1, use view direction
-            current_dir = (-config['view'][0], -config['view'][1], 0)
+        config = PLAYER_CONFIG[player_id]
+        team = config['team']
+        snake = self.snakes[team]
 
-        # Calculate new direction based on input
-        if action == Button.UP:
-            new_dir = config['up_dir']
-        elif action == Button.DOWN:
-            new_dir = config['down_dir']
-        elif action == Button.LEFT:
+        # Map the action to a new direction based on player's view orientation
+        if action == Button.LEFT:
             new_dir = config['left_dir']
         elif action == Button.RIGHT:
             new_dir = config['right_dir']
+        elif action == Button.UP:
+            new_dir = config['up_dir']
+        elif action == Button.DOWN:
+            new_dir = config['down_dir']
         else:
             return
 
-        # Don't allow 180-degree turns
-        if (current_dir[0] == -new_dir[0] and
-            current_dir[1] == -new_dir[1] and
-            current_dir[2] == -new_dir[2]):
-            return
+        # Prevent 180-degree turns
+        if (snake.direction[0] != -new_dir[0] or 
+            snake.direction[1] != -new_dir[1] or 
+            snake.direction[2] != -new_dir[2]):
+            snake.direction = new_dir
+
+    def valid(self, x, y, z):
+        if self.difficulty in [Difficulty.EASY, Difficulty.MEDIUM]:
+            # Wrap around in EASY and MEDIUM modes
+            x = x % (self.width // self.thickness)
+            y = y % (self.height // self.thickness)
+            z = z % (self.length // self.thickness)
+            return True
+        return 0 <= x < (self.width // self.thickness) and 0 <= y < (self.height // self.thickness) and 0 <= z < (self.length // self.thickness)
+
+    def update_snake(self, snake_id):
+        """Update a single snake's position and handle collisions."""
+        snake = self.snakes[snake_id]
+        other_snake_id = TeamID.ORANGE if snake_id == TeamID.BLUE else TeamID.BLUE
+        other_snake = self.snakes[other_snake_id]
 
         # Calculate new head position
-        new_head = (
-            head[0] + new_dir[0],
-            head[1] + new_dir[1],
-            head[2] + new_dir[2]
-        )
+        head = snake.body[0]
+        new_head = (head[0] + snake.direction[0],
+                   head[1] + snake.direction[1],
+                   head[2] + snake.direction[2])
+
+        # Handle wrapping in EASY and MEDIUM modes
+        if self.difficulty in [Difficulty.EASY, Difficulty.MEDIUM]:
+            new_head = (new_head[0] % (self.width // self.thickness),
+                       new_head[1] % (self.height // self.thickness),
+                       new_head[2] % (self.length // self.thickness))
 
         # Check for collisions
-        if (new_head[0] < 0 or new_head[0] >= self.width or
-            new_head[1] < 0 or new_head[1] >= self.height or
-            new_head[2] < 0 or new_head[2] >= self.length):
-            self.game_over_active = True
-            return
-
-        # Check for self-collision
-        if new_head in snake:
-            self.game_over_active = True
-            return
-
-        # Check for collision with other snakes
-        for other_id, other_snake in self.snakes.items():
-            if other_id != player_id and new_head in other_snake:
+        if (not self.valid(*new_head) or  # Wall collision (only in HARD mode)
+            new_head in snake.body or      # Self collision
+            new_head in other_snake.body):
+            snake.score -= 1
+            snake.length -= 1
+            if snake.length <= 0:
+                snake.length = 0
                 self.game_over_active = True
-                return
+                self.game_over_flash_state = {
+                    'count': 10,  # 5 flashes (on/off)
+                    'timer': 0,
+                    'interval': 0.2,
+                    'border_on': False
+                }
+                return False
+            else:
+                # Respawn snake at a new position
+                while True:
+                    x = random.randint(0, self.width-1)
+                    y = random.randint(0, self.height-1)
+                    z = random.randint(0, self.length-1)
+                    pos = (x, y, z)
+                    if (pos not in snake.body and 
+                        pos not in other_snake.body and 
+                        pos != self.apple):
+                        snake.body = [pos]
+                        snake.direction = (1, 0, 0)  # Default direction
+                        break
+                return True
 
         # Move snake
-        snake.appendleft(new_head)
+        snake.body.insert(0, new_head)
+        if len(snake.body) > snake.length:
+            snake.body.pop()
 
-        # Check for food collision
-        if new_head == self.food:
-            self.spawn_food()
-        else:
-            snake.pop() 
+        # Check for apple consumption
+        if new_head == self.apple:
+            snake.length += 1
+            snake.score += 1  # Increment score when eating an apple
+            # Create explosion effect at apple position
+            self.explosions.append(RainbowExplosion(self.apple, self.last_update_time))
+            self.place_new_apple()
+
+        return True
+
+    def place_new_apple(self):
+        """Place apple in a valid position not occupied by any snake."""
+        while True:
+            x = random.randint(0, self.width // self.thickness - 1)
+            y = random.randint(0, self.height // self.thickness - 1)
+            z = random.randint(0, self.length // self.thickness - 1)
+            pos = (x, y, z)
+            if (pos not in self.snakes[TeamID.BLUE].body and 
+                pos not in self.snakes[TeamID.ORANGE].body):
+                self.apple = pos
+                break

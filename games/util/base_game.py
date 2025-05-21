@@ -19,42 +19,6 @@ class TeamID(Enum):
     BLUE = 1
     ORANGE = 2
 
-# Configuration mapping player roles to their team and view orientation
-PLAYER_CONFIG = {
-    PlayerID.BLUE_P1: {
-        'team': TeamID.BLUE,
-        'view': (-1, 0, 0),  # -X view
-        'left_dir': (0, -1, 0),  # -Y
-        'right_dir': (0, 1, 0),  # +Y
-        'up_dir': (0, 0, 1),    # +Z
-        'down_dir': (0, 0, -1), # -Z
-    },
-    PlayerID.BLUE_P2: {
-        'team': TeamID.BLUE,
-        'view': (0, -1, 0),  # -Y view
-        'left_dir': (1, 0, 0),  # +X
-        'right_dir': (-1, 0, 0), # -X
-        'up_dir': (0, 0, 1),    # +Z
-        'down_dir': (0, 0, -1), # -Z
-    },
-    PlayerID.ORANGE_P1: {
-        'team': TeamID.ORANGE,
-        'view': (1, 0, 0),   # +X view
-        'left_dir': (0, 1, 0),  # +Y
-        'right_dir': (0, -1, 0), # -Y
-        'up_dir': (0, 0, 1),    # +Z
-        'down_dir': (0, 0, -1), # -Z
-    },
-    PlayerID.ORANGE_P2: {
-        'team': TeamID.ORANGE,
-        'view': (0, 1, 0),   # +Y view
-        'left_dir': (-1, 0, 0), # -X
-        'right_dir': (1, 0, 0),  # +X
-        'up_dir': (0, 0, 1),    # +Z
-        'down_dir': (0, 0, -1), # -Z
-    }
-}
-
 class BaseGame:
     def __init__(self, width=20, height=20, length=20, frameRate=3, config=None, input_handler=None):
         self.width = width
@@ -114,10 +78,6 @@ class BaseGame:
         # In game mode, directly pass all button events to process_player_input
         self.process_player_input(player_id, button, button_state)
 
-    def get_player_config(self, player_id):
-        """Get the configuration for a player."""
-        return PLAYER_CONFIG[player_id]
-
     def get_player_score(self, player_id):
         """Get the score for a player."""
         raise NotImplementedError("Subclasses must implement get_player_score")
@@ -160,51 +120,7 @@ class BaseGame:
         """
         # Clear the display first
         await controller_state.clear_lcd()
-        
-        if self.menu_active:
-            # Default menu display
-            controller_state.write_lcd(0, 0, f"{self.__class__.__name__.replace('Game', '')} MENU")
-            controller_state.write_lcd(0, 2, "Make a selection")
-            controller_state.write_lcd(0, 3, "Press SELECT")
-        elif self.countdown_active:
-            # Default countdown display
-            difficulty_text = ""
-            if hasattr(self, 'difficulty') and self.difficulty:
-                difficulty_text = f"{self.difficulty.name}"
-            
-            controller_state.write_lcd(0, 0, f"{self.__class__.__name__.replace('Game', '')}")
-            if difficulty_text:
-                controller_state.write_lcd(0, 1, difficulty_text)
-            controller_state.write_lcd(0, 2, f"GET READY! {self.countdown_value}...")
-            controller_state.write_lcd(0, 3, "Hold SELECT to EXIT")
-        elif self.game_over_active:
-            # Default game over display
-            score = self.get_player_score(player_id)
-            other_score = self.get_opponent_score(player_id)
-            result = "DRAW"
-            if score > other_score: 
-                result = "WIN! :)"
-            elif score < other_score: 
-                result = "LOSE :("
-            
-            config = self.get_player_config(player_id)
-            team_name = config['team'].name if config and 'team' in config else "NO TEAM"
-            
-            controller_state.write_lcd(0, 0, f"GAME OVER! YOU {result}")
-            controller_state.write_lcd(0, 1, f"TEAM {team_name}: {score}")
-            controller_state.write_lcd(0, 2, f"OPPONENT: {other_score}")
-            controller_state.write_lcd(0, 3, "Hold SELECT to EXIT")
-        else:
-            # Default in-game display
-            config = self.get_player_config(player_id)
-            team_name = config['team'].name if config and 'team' in config else "NO TEAM"
-            score = self.get_player_score(player_id)
-            other_score = self.get_opponent_score(player_id)
-            
-            controller_state.write_lcd(0, 0, f"TEAM: {team_name}")
-            controller_state.write_lcd(0, 1, f"SCORE:    {score}")
-            controller_state.write_lcd(0, 2, f"OPPONENT: {other_score}")
-            controller_state.write_lcd(0, 3, "Hold SELECT to EXIT")
+        await controller_state.write_lcd(0, 0, "Game: {}".format(self.__class__.__name__))
             
         # Commit the changes
         await controller_state.commit()

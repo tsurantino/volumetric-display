@@ -142,7 +142,7 @@ class GameScene(Scene):
 
     def get_player_config(self, player_id):
         """Get the configuration for a player."""
-        return PLAYER_CONFIG[player_id]
+        raise NotImplementedError("get_player_config method not implemented")
 
     def get_player_score(self, player_id):
         """Get the score for a player."""
