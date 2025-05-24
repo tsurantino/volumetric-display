@@ -1,0 +1,5 @@
+bazel-*
+external/
+**/__pycache__/
+touchdesigner/
+*.lock
