@@ -62,7 +62,13 @@ class ControllerState:
 
     def disconnect(self):
         if self._heartbeat_task:
-            self._heartbeat_task.cancel()
+            try:
+                loop = self._heartbeat_task.get_loop()
+                if loop.is_running() and not loop.is_closed():
+                    self._heartbeat_task.cancel()
+            except RuntimeError:
+                # Loop already closed; ignore
+                pass
             self._heartbeat_task = None
         if self._socket:
             try:

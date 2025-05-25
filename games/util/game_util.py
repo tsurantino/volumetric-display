@@ -56,23 +56,23 @@ class DisplayManager:
         self.last_display_update = current_time
 
         async def update_single_controller(controller_state, player_id):
-            # Use the game_state's update_controller_display_state method if it exists
-            if hasattr(game_state, 'update_controller_display_state') and callable(game_state.update_controller_display_state):
-                # Let the game handle clear and commit
-                await game_state.update_controller_display_state(controller_state, player_id)
-            elif hasattr(game_state, 'update_display') and callable(game_state.update_display):
-                # For backward compatibility
-                await game_state.update_display(controller_state, player_id)
-            else:
-                # Fallback for any types that don't have display update methods
-                controller_state.clear()
-                controller_state.write_lcd(0, 0, "ARTNET DISPLAY")
-                controller_state.write_lcd(0, 1, "Display Error")
-                if hasattr(game_state, '__class__') and hasattr(game_state.__class__, '__name__'):
-                    controller_state.write_lcd(0, 2, f"Class: {game_state.__class__.__name__}")
+            try:
+                # Use the game_state's update_controller_display_state method if it exists
+                if hasattr(game_state, 'update_controller_display_state') and callable(game_state.update_controller_display_state):
+                    await game_state.update_controller_display_state(controller_state, player_id)
+                elif hasattr(game_state, 'update_display') and callable(game_state.update_display):
+                    await game_state.update_display(controller_state, player_id)
                 else:
-                    controller_state.write_lcd(0, 2, "Unknown Class")
-                await controller_state.commit()
+                    controller_state.clear()
+                    controller_state.write_lcd(0, 0, "ARTNET DISPLAY")
+                    controller_state.write_lcd(0, 1, "Display Error")
+                    if hasattr(game_state, '__class__') and hasattr(game_state.__class__, '__name__'):
+                        controller_state.write_lcd(0, 2, f"Class: {game_state.__class__.__name__}")
+                    else:
+                        controller_state.write_lcd(0, 2, "Unknown Class")
+                    await controller_state.commit()
+            except (BrokenPipeError, ConnectionError, RuntimeError, OSError) as e:
+                print(f"Display update failed for controller: {e}")
 
         # Create and gather all controller update tasks
         update_tasks = [
