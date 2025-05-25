@@ -43,6 +43,9 @@ PLAYER_CONFIG = {
     }
 }
 
+# Time in seconds to reach a full power shot when holding SELECT
+FULL_CHARGE_TIME = 1.5
+
 @dataclass
 class Sphere:
     x: float  # position
@@ -61,7 +64,7 @@ class Sphere:
     bounce_count: int = 0  # How many times the sphere has bounced off a wall/floor/ceiling
 
     # Physics constants
-    GRAVITY = 1000.0  # Gravity acceleration
+    GRAVITY = 100.0  # Gravity acceleration (reduced)
     ELASTICITY = 0.95  # Bounce elasticity (1.0 = perfect bounce)
     AIR_DAMPING = 0.999  # Air resistance (velocity multiplier per update)
     GROUND_FRICTION = 0.95  # Additional friction when touching ground
@@ -415,9 +418,9 @@ class SphereShooterGame(BaseGame):
     def launch_sphere(self, cannon: Cannon, charge_time: float):
         """Launch a sphere from a cannon."""
         # Calculate velocity based on charge time (1-3 seconds)
-        base_speed = 50.0  # Base speed
-        max_speed = 500.0   # Maximum speed
-        speed = base_speed + (max_speed - base_speed) * min(charge_time / 3.0, 1.0)
+        base_speed = 10.0  # Base speed (reduced)
+        max_speed = 100.0   # Maximum speed (reduced)
+        speed = base_speed + (max_speed - base_speed) * min(charge_time / FULL_CHARGE_TIME, 1.0)
 
         # Set initial position based on cannon face
         if cannon.face == 'x':
@@ -508,7 +511,7 @@ class SphereShooterGame(BaseGame):
             color = cannon.color
             if cannon.charging and cannon.select_hold_start:
                 charge_time = time.monotonic() - cannon.select_hold_start
-                charge_percentage = min(1.0, charge_time / 3.0)
+                charge_percentage = min(1.0, charge_time / FULL_CHARGE_TIME)
                 pulse_speed = 5 + charge_percentage * 15
                 pulse = (math.sin(charge_time * pulse_speed) + 1) / 2
                 brightness = 1.0 + charge_percentage * 1.5
@@ -587,7 +590,7 @@ class SphereShooterGame(BaseGame):
         if cannon and cannon.charging and cannon.select_hold_start:
             # Show charging animation when SELECT is held
             charge_time = time.monotonic() - cannon.select_hold_start
-            charge_percent = min(int(charge_time / 3.0 * 100), 100)
+            charge_percentage = min(1.0, charge_time / FULL_CHARGE_TIME)
             
             controller_state.write_lcd(0, 0, f"SPHERE SHOOTER")
             controller_state.write_lcd(0, 1, f"TEAM: {team_name}")
@@ -595,10 +598,10 @@ class SphereShooterGame(BaseGame):
             # Create a charging progress bar
             charge_bar = ""
             bar_length = 18
-            filled = int(charge_percent / 100 * bar_length)
+            filled = int(charge_percentage * bar_length)
             charge_bar = "[" + "#" * filled + "-" * (bar_length - filled) + "]"
             
-            controller_state.write_lcd(0, 2, f"CHARGING: {charge_percent}%")
+            controller_state.write_lcd(0, 2, f"CHARGING: {charge_percentage * 100:.0f}%")
             controller_state.write_lcd(0, 3, charge_bar)
         else:
             # Regular game display
