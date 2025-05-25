@@ -11,33 +11,33 @@ from typing import List, Dict, Tuple, Set
 PLAYER_CONFIG = {
     PlayerID.BLUE_P1: {
         'team': TeamID.BLUE,
-        'view': (-1, 0, 0),  # -X view
-        'left_dir': (0, -1, 0),  # -Y
-        'right_dir': (0, 1, 0),  # +Y
+        'view': (1, 0, 0),  # -X view
+        'left_dir': (0, 1, 0),  # -Y
+        'right_dir': (0, -1, 0),  # +Y
         'up_dir': (0, 0, 1),    # +Z
         'down_dir': (0, 0, -1), # -Z
     },
     PlayerID.BLUE_P2: {
         'team': TeamID.BLUE,
-        'view': (0, -1, 0),  # -Y view
-        'left_dir': (1, 0, 0),  # +X
-        'right_dir': (-1, 0, 0), # -X
+        'view': (0, 1, 0),  # -Y view
+        'left_dir': (-1, 0, 0),  # +X
+        'right_dir': (1, 0, 0), # -X
         'up_dir': (0, 0, 1),    # +Z
         'down_dir': (0, 0, -1), # -Z
     },
     PlayerID.ORANGE_P1: {
         'team': TeamID.ORANGE,
-        'view': (1, 0, 0),   # +X view
-        'left_dir': (0, 1, 0),  # +Y
-        'right_dir': (0, -1, 0), # -Y
+        'view': (-1, 0, 0),   # +X view
+        'left_dir': (0, -1, 0),  # +Y
+        'right_dir': (0, 1, 0), # -Y
         'up_dir': (0, 0, 1),    # +Z
         'down_dir': (0, 0, -1), # -Z
     },
     PlayerID.ORANGE_P2: {
         'team': TeamID.ORANGE,
-        'view': (0, 1, 0),   # +Y view
-        'left_dir': (-1, 0, 0), # -X
-        'right_dir': (1, 0, 0),  # +X
+        'view': (0, -1, 0),   # +Y view
+        'left_dir': (1, 0, 0), # -X
+        'right_dir': (-1, 0, 0),  # +X
         'up_dir': (0, 0, 1),    # +Z
         'down_dir': (0, 0, -1), # -Z
     }
@@ -215,12 +215,19 @@ class SphereShooterGame(BaseGame):
         hoop_radius = 3.0
         self.hoop = Hoop(width / 2, height / 2, hoop_radius)
 
+        # Hoop motion state variables
+        self.hoop_moving = False
+        self.hoop_dwell_timer = random.uniform(1.0, 2.0)
+        self.hoop_move_progress = 0.0
+
         # Call parent constructor (this invokes reset_game)
         super().__init__(width, height, length, frameRate, config, input_handler)
 
         # Player score map (reset_game will have created it; keep for clarity)
         if not hasattr(self, 'player_scores'):
             self.player_scores: Dict[PlayerID, int] = {pid: 0 for pid in PlayerID}
+
+        self.last_update_time = time.monotonic()
 
     def reset_game(self):
         """Reset the game state."""
@@ -260,6 +267,11 @@ class SphereShooterGame(BaseGame):
                 color=self.team_colors[team],
                 owner=player_id
             )
+
+        # Reset hoop motion state
+        self.hoop_moving = False
+        self.hoop_dwell_timer = random.uniform(1.0, 2.0)
+        self.hoop_move_progress = 0.0
 
     def get_player_score(self, player_id):
         """Get the score for a player."""
@@ -302,15 +314,44 @@ class SphereShooterGame(BaseGame):
     def update_game_state(self):
         """Update the game state."""
         current_time = time.monotonic()
+        dt = current_time - self.last_update_time
+        self.last_update_time = current_time
 
-        # Small timestep for physics and motion
-        dt = 0.01
+        # ---------- Move hoop with random smoothstep ----------
+        if not hasattr(self, 'hoop_moving'):
+            self.hoop_moving = False
+            self.hoop_dwell_timer = random.uniform(1.0, 2.0)
 
-        # ---------- Move hoop ----------
-        hoop_path_radius = min(self.width, self.height) / 3 - self.hoop.radius - 1
-        self.hoop_angle += 0.3 * dt  # radians per second
-        self.hoop.x = self.width / 2 + math.cos(self.hoop_angle) * hoop_path_radius
-        self.hoop.z = self.height / 2 + math.sin(self.hoop_angle) * hoop_path_radius  # using .z as y coordinate in floor plane
+        if not self.hoop_moving:
+            # Waiting period before picking a new target
+            self.hoop_dwell_timer -= dt
+            if self.hoop_dwell_timer <= 0.0:
+                # Pick new random target position on floor within bounds
+                margin = self.hoop.radius + 1
+                target_x = random.uniform(margin, self.width - margin)
+                target_y = random.uniform(margin, self.height - margin)
+
+                self.hoop_start_x = self.hoop.x
+                self.hoop_start_y = self.hoop.z  # stored as z
+                self.hoop_target_x = target_x
+                self.hoop_target_y = target_y
+
+                self.hoop_move_duration = random.uniform(2.0, 4.0)  # seconds to move
+                self.hoop_move_progress = 0.0
+                self.hoop_moving = True
+        else:
+            # Progress the move
+            self.hoop_move_progress += dt / self.hoop_move_duration
+            if self.hoop_move_progress >= 1.0:
+                self.hoop_move_progress = 1.0
+                self.hoop_moving = False
+                self.hoop_dwell_timer = random.uniform(1.0, 2.0)
+
+            # Smoothstep interpolation
+            t = self.hoop_move_progress
+            t_smooth = t * t * (3 - 2 * t)
+            self.hoop.x = self.hoop_start_x + (self.hoop_target_x - self.hoop_start_x) * t_smooth
+            self.hoop.z = self.hoop_start_y + (self.hoop_target_y - self.hoop_start_y) * t_smooth
 
         # ---------- Move cannons based on held directions ----------
         cannon_speed = 5.0  # voxels per second
@@ -319,14 +360,14 @@ class SphereShooterGame(BaseGame):
             # Movement in face plane
             if Button.LEFT in cannon.held_dirs:
                 if cannon.face in ['x', '-y']:
-                    cannon.x += move_amt
-                else:
                     cannon.x -= move_amt
+                else:
+                    cannon.x += move_amt
             if Button.RIGHT in cannon.held_dirs:
                 if cannon.face in ['x', '-y']:
-                    cannon.x -= move_amt
-                else:
                     cannon.x += move_amt
+                else:
+                    cannon.x -= move_amt
             if Button.UP in cannon.held_dirs:
                 cannon.y = min(self.length - 1 - cannon.radius, cannon.y + move_amt)
             if Button.DOWN in cannon.held_dirs:
