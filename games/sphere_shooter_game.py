@@ -1,10 +1,10 @@
-from games.util.base_game import BaseGame, PlayerID, TeamID, Difficulty, RGB
+from games.util.base_game import BaseGame, PlayerID, TeamID, RGB
 from games.util.game_util import Button, ButtonState
 import random
 import math
 import time
-from dataclasses import dataclass
-from typing import List, Dict, Tuple
+from dataclasses import dataclass, field
+from typing import List, Dict, Tuple, Set
 
 
 # Configuration mapping player roles to their team and view orientation
@@ -57,6 +57,8 @@ class Sphere:
     lifetime: float
     color: RGB
     team: TeamID  # Track which team shot this sphere
+    owner: PlayerID  # Which player fired this sphere
+    bounce_count: int = 0  # How many times the sphere has bounced off a wall/floor/ceiling
 
     # Physics constants
     GRAVITY = 1000.0  # Gravity acceleration
@@ -64,6 +66,7 @@ class Sphere:
     AIR_DAMPING = 0.999  # Air resistance (velocity multiplier per update)
     GROUND_FRICTION = 0.95  # Additional friction when touching ground
     MINIMUM_SPEED = 0.01  # Speed below which we stop movement
+    MAX_BOUNCES = 5  # Expire after this many bounces
 
     def update(self, dt: float, bounds: tuple[float, float, float]):
         # Apply gravity
@@ -74,10 +77,10 @@ class Sphere:
         self.vy *= self.AIR_DAMPING
         self.vz *= self.AIR_DAMPING
 
-        # Apply additional ground friction when touching bottom
-        if self.y - self.radius <= 0:
+        # Apply additional ground friction when touching bottom (z = 0 plane)
+        if self.z - self.radius <= 0:
             self.vx *= self.GROUND_FRICTION
-            self.vz *= self.GROUND_FRICTION
+            self.vy *= self.GROUND_FRICTION
 
         # Stop very slow movement
         speed = math.sqrt(self.vx * self.vx + self.vy * self.vy + self.vz * self.vz)
@@ -93,26 +96,37 @@ class Sphere:
 
         # Bounce off walls with energy loss
         width, height, length = bounds
+        bounced = False  # Track if we bounced this update
         if self.x - self.radius < 0:
             self.x = self.radius
             self.vx = abs(self.vx) * self.ELASTICITY
+            bounced = True
         elif self.x + self.radius > width - 1:
             self.x = width - 1 - self.radius
             self.vx = -abs(self.vx) * self.ELASTICITY
+            bounced = True
 
         if self.y - self.radius < 0:
             self.y = self.radius
             self.vy = abs(self.vy) * self.ELASTICITY
+            bounced = True
         elif self.y + self.radius > height - 1:
             self.y = height - 1 - self.radius
             self.vy = -abs(self.vy) * self.ELASTICITY
+            bounced = True
 
         if self.z - self.radius < 0:
             self.z = self.radius
             self.vz = abs(self.vz) * self.ELASTICITY
+            bounced = True
         elif self.z + self.radius > length - 1:
             self.z = length - 1 - self.radius
             self.vz = -abs(self.vz) * self.ELASTICITY
+            bounced = True
+
+        # Increment bounce counter if we hit anything
+        if bounced:
+            self.bounce_count += 1
 
     def collide_with(self, other: 'Sphere'):
         """Handle elastic collision with another sphere"""
@@ -160,7 +174,8 @@ class Sphere:
                 other.z += nz * overlap
 
     def is_expired(self, current_time: float) -> bool:
-        return current_time - self.birth_time > self.lifetime
+        # Expire after lifetime OR after too many bounces
+        return (current_time - self.birth_time > self.lifetime) or (self.bounce_count >= self.MAX_BOUNCES)
 
 @dataclass
 class Cannon:
@@ -169,9 +184,24 @@ class Cannon:
     face: str  # Which face of the cube ('x', '-x', 'y', '-y')
     team: TeamID
     color: RGB
+    owner: PlayerID
     select_hold_start: float = None  # When SELECT was pressed
     radius: float = 1.0
     charging: bool = False  # Whether the cannon is charging
+    held_dirs: Set[Button] = field(default_factory=set)  # Directions currently held down
+    draw_radius: float = 2.0  # Visual radius when rendering
+
+# ------------------------
+# Hoop representation
+# ------------------------
+
+@dataclass
+class Hoop:
+    """A moving hoop that sits on the floor (y == 0) and slowly drifts around."""
+    x: float
+    z: float
+    radius: float
+    color: RGB = field(default_factory=lambda: RGB(255, 255, 255))  # default white
 
 class SphereShooterGame(BaseGame):
     def __init__(self, width=20, height=20, length=20, frameRate=30, config=None, input_handler=None):
@@ -179,15 +209,30 @@ class SphereShooterGame(BaseGame):
             TeamID.BLUE: RGB(0, 0, 255),    # Blue team
             TeamID.ORANGE: RGB(255, 165, 0)  # Orange team
         }
+
+        # Hoop parameters – must exist before BaseGame.__init__ triggers reset_game
+        self.hoop_angle = 0.0
+        hoop_radius = 3.0
+        self.hoop = Hoop(width / 2, height / 2, hoop_radius)
+
+        # Call parent constructor (this invokes reset_game)
         super().__init__(width, height, length, frameRate, config, input_handler)
-        self.spheres: List[Sphere] = []
-        self.cannons: Dict[PlayerID, Cannon] = {}
-        self.reset_game()
+
+        # Player score map (reset_game will have created it; keep for clarity)
+        if not hasattr(self, 'player_scores'):
+            self.player_scores: Dict[PlayerID, int] = {pid: 0 for pid in PlayerID}
 
     def reset_game(self):
         """Reset the game state."""
         self.spheres = []
         self.cannons = {}
+        self.player_scores = {pid: 0 for pid in PlayerID}
+
+        # Reset hoop
+        self.hoop_angle = 0.0
+        self.hoop.x = self.width / 2
+        self.hoop.z = self.height / 2
+
         self.game_over_active = False
         self.game_over_flash_state = {'count': 0, 'timer': 0, 'interval': 0.2, 'border_on': False}
 
@@ -212,22 +257,17 @@ class SphereShooterGame(BaseGame):
                 y=y,
                 face=face,
                 team=team,
-                color=self.team_colors[team]
+                color=self.team_colors[team],
+                owner=player_id
             )
 
     def get_player_score(self, player_id):
         """Get the score for a player."""
-        config = PLAYER_CONFIG[player_id]
-        team = config['team']
-        # Count spheres that are still in play
-        return sum(1 for sphere in self.spheres if sphere.team == team)
+        return self.player_scores.get(player_id, 0)
 
     def get_opponent_score(self, player_id):
         """Get the score for a player's opponent."""
-        config = PLAYER_CONFIG[player_id]
-        team = config['team']
-        opponent_team = TeamID.ORANGE if team == TeamID.BLUE else TeamID.BLUE
-        return sum(1 for sphere in self.spheres if sphere.team == opponent_team)
+        return max(score for pid, score in self.player_scores.items() if pid != player_id)
 
     def process_player_input(self, player_id, button, button_state):
         """Process input from a player."""
@@ -252,51 +292,75 @@ class SphereShooterGame(BaseGame):
                 cannon.charging = False
             return
         
-        # Only handle directional movement on button press
-        if button_state != ButtonState.PRESSED:
-            return
-            
-        move_speed = 1.0
-        
-        # Handle movement
-        new_x = cannon.x
-        if button == Button.DOWN:
-            cannon.y = max(cannon.radius, min(self.length - 1 - cannon.radius, cannon.y - move_speed))
-        elif button == Button.UP:
-            cannon.y = max(cannon.radius, min(self.length - 1 - cannon.radius, cannon.y + move_speed))
-        elif button == Button.LEFT:
-            if cannon.face in ['x', '-y']:
-                new_x = cannon.x + move_speed
-            else:
-                new_x = cannon.x - move_speed
-        elif button == Button.RIGHT:
-            if cannon.face in ['x', '-y']:
-                new_x = cannon.x - move_speed
-            else:
-                new_x = cannon.x + move_speed
-        cannon.x = max(cannon.radius, min(self.height - 1 - cannon.radius, new_x))
+        # Track directional button holds
+        if button in {Button.LEFT, Button.RIGHT, Button.UP, Button.DOWN}:
+            if button_state == ButtonState.PRESSED:
+                cannon.held_dirs.add(button)
+            elif button_state == ButtonState.RELEASED:
+                cannon.held_dirs.discard(button)
 
     def update_game_state(self):
         """Update the game state."""
         current_time = time.monotonic()
 
-        # Removed the auto-firing mechanic since we now handle firing on button release
+        # Small timestep for physics and motion
+        dt = 0.01
 
-        # Update sphere physics
+        # ---------- Move hoop ----------
+        hoop_path_radius = min(self.width, self.height) / 3 - self.hoop.radius - 1
+        self.hoop_angle += 0.3 * dt  # radians per second
+        self.hoop.x = self.width / 2 + math.cos(self.hoop_angle) * hoop_path_radius
+        self.hoop.z = self.height / 2 + math.sin(self.hoop_angle) * hoop_path_radius  # using .z as y coordinate in floor plane
+
+        # ---------- Move cannons based on held directions ----------
+        cannon_speed = 5.0  # voxels per second
+        move_amt = cannon_speed * dt
+        for cannon in self.cannons.values():
+            # Movement in face plane
+            if Button.LEFT in cannon.held_dirs:
+                if cannon.face in ['x', '-y']:
+                    cannon.x += move_amt
+                else:
+                    cannon.x -= move_amt
+            if Button.RIGHT in cannon.held_dirs:
+                if cannon.face in ['x', '-y']:
+                    cannon.x -= move_amt
+                else:
+                    cannon.x += move_amt
+            if Button.UP in cannon.held_dirs:
+                cannon.y = min(self.length - 1 - cannon.radius, cannon.y + move_amt)
+            if Button.DOWN in cannon.held_dirs:
+                cannon.y = max(cannon.radius, cannon.y - move_amt)
+
+            # Clamp within bounds of face
+            cannon.x = max(cannon.radius, min(self.height - 1 - cannon.radius, cannon.x))
+
+        # ---------- Update sphere physics, check scoring ----------
         bounds = (self.width, self.height, self.length)
-        dt = 0.01  # Small timestep for better physics
         new_spheres = []
 
         for sphere in self.spheres:
-            if not sphere.is_expired(current_time):
-                sphere.update(dt, bounds)
+            if sphere.is_expired(current_time):
+                continue
 
-                # Check collisions with other spheres
-                for other in self.spheres:
-                    if sphere != other and not other.is_expired(current_time):
-                        sphere.collide_with(other)
+            # Update physics
+            sphere.update(dt, bounds)
 
-                new_spheres.append(sphere)
+            # Collision with other spheres
+            for other in self.spheres:
+                if sphere != other and not other.is_expired(current_time):
+                    sphere.collide_with(other)
+
+            # Check if sphere scores through hoop (on floor and within radius)
+            if (sphere.z - sphere.radius) <= 0.5:
+                dx = sphere.x - self.hoop.x
+                dy = sphere.y - self.hoop.z  # treat hoop.z as y for floor plane
+                if math.sqrt(dx * dx + dy * dy) <= self.hoop.radius:
+                    # Score for owner
+                    self.player_scores[sphere.owner] += 1
+                    continue  # Do not keep this sphere
+
+            new_spheres.append(sphere)
 
         self.spheres = new_spheres
 
@@ -359,7 +423,8 @@ class SphereShooterGame(BaseGame):
             lifetime=15.0,  # Spheres last 15 seconds
             color=cannon.color,
             team=cannon.team,
-            mass=1.0
+            mass=1.0,
+            owner=cannon.owner
         )
         self.spheres.append(sphere)
 
@@ -398,37 +463,59 @@ class SphereShooterGame(BaseGame):
 
         # Draw cannons
         for cannon in self.cannons.values():
-            # Calculate cannon color based on charge
+            # Calculate cannon color (include charging pulse as before)
             color = cannon.color
             if cannon.charging and cannon.select_hold_start:
-                # Make cannon pulse while charging
                 charge_time = time.monotonic() - cannon.select_hold_start
-                charge_percentage = min(1.0, charge_time / 3.0)  # 0-100% based on 3 second max charge
-                
-                # Pulse faster as charge increases
-                pulse_speed = 5 + charge_percentage * 15  # 5-20 Hz based on charge
-                pulse = (math.sin(charge_time * pulse_speed) + 1) / 2  # 0 to 1 pulsing
-                
-                # Increase brightness based on charge percentage
-                brightness = 1.0 + charge_percentage * 1.5  # 100-250% brightness based on charge
-                
-                # Apply pulse and charge effects
+                charge_percentage = min(1.0, charge_time / 3.0)
+                pulse_speed = 5 + charge_percentage * 15
+                pulse = (math.sin(charge_time * pulse_speed) + 1) / 2
+                brightness = 1.0 + charge_percentage * 1.5
                 color = RGB(
                     min(255, int(color.red * brightness * (1 + pulse * 0.5))),
                     min(255, int(color.green * brightness * (1 + pulse * 0.5))),
                     min(255, int(color.blue * brightness * (1 + pulse * 0.5)))
                 )
 
-            # Draw cannon on its face
-            x, y, z = int(cannon.x), int(cannon.y), 0
-            if cannon.face == 'x':
-                raster.set_pix(self.width - 1, x, y, color)
-            elif cannon.face == '-x':
-                raster.set_pix(0, x, y, color)
-            elif cannon.face == 'y':
-                raster.set_pix(x, self.height - 1, y, color)
-            else:  # '-y'
-                raster.set_pix(x, 0, y, color)
+            # Draw cannon as filled circle on its face
+            for u in range(-int(cannon.draw_radius), int(cannon.draw_radius) + 1):
+                for v in range(-int(cannon.draw_radius), int(cannon.draw_radius) + 1):
+                    if u*u + v*v > cannon.draw_radius * cannon.draw_radius:
+                        continue
+                    if cannon.face == 'x':
+                        xx = self.width - 1
+                        yy = int(cannon.x + u)
+                        zz = int(cannon.y + v)
+                        if 0 <= yy < self.height and 0 <= zz < self.length:
+                            raster.set_pix(xx, yy, zz, color)
+                    elif cannon.face == '-x':
+                        xx = 0
+                        yy = int(cannon.x + u)
+                        zz = int(cannon.y + v)
+                        if 0 <= yy < self.height and 0 <= zz < self.length:
+                            raster.set_pix(xx, yy, zz, color)
+                    elif cannon.face == 'y':
+                        yy = self.height - 1
+                        xx = int(cannon.x + u)
+                        zz = int(cannon.y + v)
+                        if 0 <= xx < self.width and 0 <= zz < self.length:
+                            raster.set_pix(xx, yy, zz, color)
+                    else:  # '-y'
+                        yy = 0
+                        xx = int(cannon.x + u)
+                        zz = int(cannon.y + v)
+                        if 0 <= xx < self.width and 0 <= zz < self.length:
+                            raster.set_pix(xx, yy, zz, color)
+
+        # Draw hoop (ring on floor y==0)
+        ring_thickness = 0.5
+        for xx in range(self.width):
+            for yy in range(self.height):
+                dx = xx + 0.5 - self.hoop.x
+                dy = yy + 0.5 - self.hoop.z  # hoop.z stores y coordinate on floor plane
+                dist = math.sqrt(dx*dx + dy*dy)
+                if abs(dist - self.hoop.radius) <= ring_thickness:
+                    raster.set_pix(xx, yy, 0, self.hoop.color)
 
         # Draw game over border
         if self.game_over_active and self.game_over_flash_state['border_on']:
@@ -477,9 +564,9 @@ class SphereShooterGame(BaseGame):
             my_score = self.get_player_score(player_id)
             opponent_score = self.get_opponent_score(player_id)
             
-            controller_state.write_lcd(0, 0, f"SPHERE SHOOTER")
-            controller_state.write_lcd(0, 1, f"TEAM {team_name}: {my_score}")
-            controller_state.write_lcd(0, 2, f"OPPONENT: {opponent_score}")
+            controller_state.write_lcd(0, 0, "SPHERE SHOOTER")
+            controller_state.write_lcd(0, 1, f"YOU: {my_score}")
+            controller_state.write_lcd(0, 2, f"BEST OPP: {opponent_score}")
             controller_state.write_lcd(0, 3, "HOLD SELECT TO CHARGE") 
 
         await controller_state.commit()
