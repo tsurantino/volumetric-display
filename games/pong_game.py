@@ -11,6 +11,8 @@ import random, math, time
 JOIN_WINDOW = 10.0  # seconds to join before game starts
 PADDLE_SIZE = 4     # half-size (extent) of paddle square in voxels
 BALL_SPEED = 40.0   # constant ball speed voxels/second
+BALL_RADIUS = 1.5
+PADDLE_MOVE_SPEED = 20.0  # voxels per second for smooth movement
 
 PLAYER_FACE = {
     PlayerID.BLUE_P1: 'x-',   # -X face
@@ -38,6 +40,7 @@ class Paddle:
     cy: float
     face: str
     player: PlayerID
+    held_dirs: Set[Button] = field(default_factory=set)
 
 @dataclass
 class Ball:
@@ -111,6 +114,15 @@ class PongGame(BaseGame):
         return Paddle(cx,cy,face,pid)
 
     def process_player_input(self,player_id,button,button_state):
+        # Track held dirs
+        if player_id in self.paddles:
+            pad=self.paddles[player_id]
+            if button in {Button.LEFT,Button.RIGHT,Button.UP,Button.DOWN}:
+                if button_state==ButtonState.PRESSED:
+                    pad.held_dirs.add(button)
+                elif button_state==ButtonState.RELEASED:
+                    pad.held_dirs.discard(button)
+
         if button_state!=ButtonState.PRESSED:
             return
         # Lobby join
@@ -127,18 +139,21 @@ class PongGame(BaseGame):
         if self.game_phase!='running' or player_id not in self.active_players:
             return
         pad=self.paddles[player_id]
-        move=1.0
+        # Immediate directional bump still
+        dx=dy=0
         if button==Button.LEFT:
-            pad.cx-=move
+            dx=-1
         elif button==Button.RIGHT:
-            pad.cx+=move
+            dx=1
         elif button==Button.UP:
-            pad.cy+=move
+            dy=1
         elif button==Button.DOWN:
-            pad.cy-=move
-        # Clamp
-        pad.cx=max(PADDLE_SIZE,min(self.height-PADDLE_SIZE-1,pad.cx))
-        pad.cy=max(PADDLE_SIZE,min(self.length-PADDLE_SIZE-1,pad.cy))
+            dy=-1
+        # Small nudge so tap feels responsive (one voxel)
+        pad.cx+=dx
+        pad.cy+=dy
+        # clamp to face bounds 0-7
+        self._clamp_paddle(pad)
         if button==Button.SELECT and self.server==player_id and self.ball and self.ball.attached_to==player_id:
             # Serve
             self._launch_ball_from(pad)
@@ -154,19 +169,19 @@ class PongGame(BaseGame):
         pad=self.paddles[self.ball.attached_to]
         face=pad.face
         if face=='x-':
-            self.ball.x=0
+            self.ball.x=BALL_RADIUS
             self.ball.y=pad.cx
             self.ball.z=pad.cy
         elif face=='x+':
-            self.ball.x=self.width-1
+            self.ball.x=self.width-1-BALL_RADIUS
             self.ball.y=pad.cx
             self.ball.z=pad.cy
         elif face=='y-':
-            self.ball.y=0
+            self.ball.y=BALL_RADIUS
             self.ball.x=pad.cx
             self.ball.z=pad.cy
         else:
-            self.ball.y=self.height-1
+            self.ball.y=self.height-1-BALL_RADIUS
             self.ball.x=pad.cx
             self.ball.z=pad.cy
         self.ball.vx=self.ball.vy=self.ball.vz=0
@@ -193,24 +208,46 @@ class PongGame(BaseGame):
         if self.game_phase!='running':
             return
         dt=1.0/self.frameRate
+        # Smooth paddle movement for held directions
+        for pad in self.paddles.values():
+            dx=dy=0
+            if Button.LEFT in pad.held_dirs:
+                dx-=1
+            if Button.RIGHT in pad.held_dirs:
+                dx+=1
+            if Button.UP in pad.held_dirs:
+                dy+=1
+            if Button.DOWN in pad.held_dirs:
+                dy-=1
+            pad.cx+=dx*PADDLE_MOVE_SPEED*dt
+            pad.cy+=dy*PADDLE_MOVE_SPEED*dt
+            self._clamp_paddle(pad)
+
+        # Keep ball attached to paddle before serve
+        if self.ball and self.ball.attached_to is not None:
+            self._attach_ball_to_paddle()
+
         # move ball
         if self.ball and not self.ball.attached_to:
             self.ball.x+=self.ball.vx*dt
             self.ball.y+=self.ball.vy*dt
             self.ball.z+=self.ball.vz*dt
-            # Bounce floor/ceiling (z axis)
-            if self.ball.z<=0 or self.ball.z>=self.length-1:
+            # Bounce floor/ceiling (z axis) considering radius
+            if self.ball.z<=BALL_RADIUS:
+                self.ball.z=BALL_RADIUS
+                self.ball.vz*=-1
+            elif self.ball.z>=self.length-1-BALL_RADIUS:
+                self.ball.z=self.length-1-BALL_RADIUS
                 self.ball.vz*=-1
             # Check faces
-            # x-
-            if self.ball.x<=0:
-                self._handle_face('x-',0)
-            elif self.ball.x>=self.width-1:
-                self._handle_face('x+',self.width-1)
-            if self.ball.y<=0:
-                self._handle_face('y-',0,axis='y')
-            elif self.ball.y>=self.height-1:
-                self._handle_face('y+',self.height-1,axis='y')
+            if self.ball.x<=BALL_RADIUS:
+                self._handle_face('x-',BALL_RADIUS)
+            elif self.ball.x>=self.width-1-BALL_RADIUS:
+                self._handle_face('x+',self.width-1-BALL_RADIUS)
+            if self.ball.y<=BALL_RADIUS:
+                self._handle_face('y-',BALL_RADIUS,axis='y')
+            elif self.ball.y>=self.height-1-BALL_RADIUS:
+                self._handle_face('y+',self.height-1-BALL_RADIUS,axis='y')
 
         # update particles
         new_parts=[]
@@ -230,12 +267,15 @@ class PongGame(BaseGame):
             # compute hit against paddle area
             dx= self.ball.y - pad.cx if axis=='x' else self.ball.x - pad.cx
             dy= self.ball.z - pad.cy
-            if abs(dx)<=PADDLE_SIZE and abs(dy)<=PADDLE_SIZE:
+            if abs(dx)<=PADDLE_SIZE+BALL_RADIUS and abs(dy)<=PADDLE_SIZE+BALL_RADIUS:
                 # bounce
                 if axis=='x':
                     self.ball.vx*=-1
+                    # Reposition ball just inside play area
+                    self.ball.x = BALL_RADIUS if face=='x-' else self.width-1-BALL_RADIUS
                 else:
                     self.ball.vy*=-1
+                    self.ball.y = BALL_RADIUS if face=='y-' else self.height-1-BALL_RADIUS
                 return
             else:
                 # miss -> point to server
@@ -250,8 +290,10 @@ class PongGame(BaseGame):
         # wall bounce
         if axis=='x':
             self.ball.vx*=-1
+            self.ball.x = BALL_RADIUS if face=='x-' else self.width-1-BALL_RADIUS
         else:
             self.ball.vy*=-1
+            self.ball.y = BALL_RADIUS if face=='y-' else self.height-1-BALL_RADIUS
 
     def get_player_score(self,player_id):
         return self.scores.get(player_id,0)
@@ -287,7 +329,7 @@ class PongGame(BaseGame):
         # Draw ball
         if self.ball:
             bx,by,bz=self.ball.x,self.ball.y,self.ball.z
-            radius=1.5
+            radius=BALL_RADIUS
             minx=int(math.floor(bx-radius))
             maxx=int(math.ceil(bx+radius))
             miny=int(math.floor(by-radius))
@@ -317,4 +359,15 @@ class PongGame(BaseGame):
             vx=speed*math.sin(phi)*math.cos(theta)
             vy=speed*math.sin(phi)*math.sin(theta)
             vz=speed*math.cos(phi)
-            self.particles.append(Particle(x,y,z,vx,vy,vz,time.monotonic(),2.0,color)) 
+            self.particles.append(Particle(x,y,z,vx,vy,vz,time.monotonic(),2.0,color))
+
+    def _clamp_paddle(self,pad:Paddle):
+        # Ensure paddle remains within bounds considering size
+        if pad.face in ['x-','x+']:
+            max_cx=self.height-1-PADDLE_SIZE
+            max_cy=self.length-1-PADDLE_SIZE
+        else:
+            max_cx=self.width-1-PADDLE_SIZE
+            max_cy=self.length-1-PADDLE_SIZE
+        pad.cx=max(PADDLE_SIZE,min(max_cx,pad.cx))
+        pad.cy=max(PADDLE_SIZE,min(max_cy,pad.cy)) 
