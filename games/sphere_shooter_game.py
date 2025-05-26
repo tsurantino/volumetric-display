@@ -211,6 +211,43 @@ class Hoop:
     radius: float
     level: float = 0.0  # vertical position along z-axis (0 = floor)
     color: RGB = field(default_factory=lambda: RGB(255, 255, 255))  # default white
+    flash_color: RGB | None = None
+    flash_timer: float = 0.0  # seconds remaining for flash
+
+# ------------------------
+# Particle representation for explosion
+# ------------------------
+
+@dataclass
+class Particle:
+    x: float
+    y: float
+    z: float
+    vx: float
+    vy: float
+    vz: float
+    birth_time: float
+    lifetime: float
+    color: RGB
+    radius: float = 0.5
+
+    GRAVITY = 100.0
+    AIR_DAMPING = 0.99
+
+    def update(self, dt: float):
+        # Gravity along -z
+        self.vz -= self.GRAVITY * dt
+        # Damping
+        self.vx *= self.AIR_DAMPING
+        self.vy *= self.AIR_DAMPING
+        self.vz *= self.AIR_DAMPING
+        # Position
+        self.x += self.vx * dt
+        self.y += self.vy * dt
+        self.z += self.vz * dt
+
+    def is_expired(self, current_time: float) -> bool:
+        return current_time - self.birth_time > self.lifetime
 
 class SphereShooterGame(BaseGame):
     def __init__(self, width=20, height=20, length=20, frameRate=30, config=None, input_handler=None):
@@ -232,6 +269,9 @@ class SphereShooterGame(BaseGame):
         self.hoop_moving = False
         self.hoop_dwell_timer = random.uniform(1.0, 2.0)
         self.hoop_move_progress = 0.0
+
+        # Particle system
+        self.particles: List[Particle] = []
 
         # Call parent constructor (this invokes reset_game)
         super().__init__(width, height, length, frameRate, config, input_handler)
@@ -286,6 +326,9 @@ class SphereShooterGame(BaseGame):
         self.hoop_moving = False
         self.hoop_dwell_timer = random.uniform(1.0, 2.0)
         self.hoop_move_progress = 0.0
+
+        # Clear particles
+        self.particles = []
 
     def get_player_score(self, player_id):
         """Get the score for a player."""
@@ -399,6 +442,10 @@ class SphereShooterGame(BaseGame):
         bounds = (self.width, self.height, self.length)
         new_spheres = []
 
+        # Update hoop flash timer
+        if self.hoop.flash_timer > 0:
+            self.hoop.flash_timer = max(0.0, self.hoop.flash_timer - dt)
+
         for sphere in self.spheres:
             if sphere.is_expired(current_time):
                 continue
@@ -419,6 +466,14 @@ class SphereShooterGame(BaseGame):
                 if math.sqrt(dx * dx + dy_plane * dy_plane) <= self.hoop.radius:
                     # Score for owner
                     self.player_scores[sphere.owner] += 1
+
+                    # Hoop flash
+                    self.hoop.flash_color = sphere.color
+                    self.hoop.flash_timer = 0.5
+
+                    # Particle explosion
+                    self.spawn_particle_explosion(sphere)
+
                     continue  # Do not keep this sphere
 
             # Remove spheres that have fallen outside the cube volume entirely
@@ -431,6 +486,18 @@ class SphereShooterGame(BaseGame):
             new_spheres.append(sphere)
 
         self.spheres = new_spheres
+
+        # ---------- Update particles ----------
+        new_particles = []
+        for p in self.particles:
+            if p.is_expired(current_time):
+                continue
+            p.update(dt)
+            # Cull if out of bounds
+            if (p.x < 0 or p.x >= self.width or p.y < 0 or p.y >= self.height or p.z < 0):
+                continue
+            new_particles.append(p)
+        self.particles = new_particles
 
         # Update game over flash state
         if self.game_over_active:
@@ -495,6 +562,29 @@ class SphereShooterGame(BaseGame):
             owner=cannon.owner
         )
         self.spheres.append(sphere)
+
+    def spawn_particle_explosion(self, sphere: Sphere, count: int = 30):
+        """Spawn particles at the sphere's location after scoring."""
+        for _ in range(count):
+            speed = random.uniform(10, 40)
+            theta = random.uniform(0, 2 * math.pi)
+            phi = random.uniform(0, math.pi / 2)  # upward hemisphere
+            vx = speed * math.cos(theta) * math.sin(phi)
+            vy = speed * math.sin(theta) * math.sin(phi)
+            vz = speed * math.cos(phi)  # vertical component upward
+
+            p = Particle(
+                x=sphere.x,
+                y=sphere.y,
+                z=sphere.z,
+                vx=vx,
+                vy=vy,
+                vz=vz,
+                birth_time=time.monotonic(),
+                lifetime=3.0,
+                color=sphere.color,
+            )
+            self.particles.append(p)
 
     def render_game_state(self, raster):
         """Render the game state to the raster."""
@@ -575,17 +665,26 @@ class SphereShooterGame(BaseGame):
                         if 0 <= xx < self.width and 0 <= zz < self.length:
                             raster.set_pix(xx, yy, zz, color)
 
-        # Draw hoop (ring on floor y==0)
+        # Draw particles
+        for p in self.particles:
+            vx = int(round(p.x))
+            vy = int(round(p.y))
+            vz = int(round(p.z))
+            if 0 <= vx < self.width and 0 <= vy < self.height and 0 <= vz < self.length:
+                raster.set_pix(vx, vy, vz, p.color)
+
+        # Draw hoop (ring)
         ring_thickness = 0.5
+        hoop_color = self.hoop.color if self.hoop.flash_timer <= 0 else (self.hoop.flash_color or self.hoop.color)
         for xx in range(self.width):
             for yy in range(self.height):
                 dx = xx + 0.5 - self.hoop.x
-                dy = yy + 0.5 - self.hoop.z  # hoop.z stores y coordinate on floor plane
+                dy = yy + 0.5 - self.hoop.z
                 dist = math.sqrt(dx*dx + dy*dy)
                 if abs(dist - self.hoop.radius) <= ring_thickness:
                     z_level = int(round(self.hoop.level))
                     if 0 <= z_level < self.length:
-                        raster.set_pix(xx, yy, z_level, self.hoop.color)
+                        raster.set_pix(xx, yy, z_level, hoop_color)
 
         # Draw game over border
         if self.game_over_active and self.game_over_flash_state['border_on']:
