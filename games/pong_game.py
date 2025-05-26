@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Set
 import random, math, time
 import itertools
+import numpy as np
 
 # ----------------------------
 # Basic config
@@ -11,15 +12,15 @@ import itertools
 
 JOIN_WINDOW = 10.0  # seconds to join before game starts
 PADDLE_SIZE = 3     # half-size (extent) of paddle square in voxels
-BALL_SPEED = 20.0   # constant ball speed voxels/second
+BALL_SPEED = 15.0   # constant ball speed voxels/second
 BALL_RADIUS = 1.5
 PADDLE_MOVE_SPEED = 30.0  # voxels per second for smooth movement
 SPIKE_TIME_WINDOW = 0.1  # seconds after bounce in which a SELECT press counts as a spike
 SPIKE_STRENGTH = 0.5     # how strongly paddle motion influences spike
 WIN_SCORE = 5           # points needed to win a game
-EDGE_EPS = 0.3          # threshold for detecting edge hits on paddle
-BOUNCE_SPEED_SCALE = 1.05  # 5% speed-up each bounce
-MAX_SPEED_MULT = 2.0    # cap ball speed increase
+EDGE_EPS = 0.5          # threshold for detecting edge hits on paddle
+BOUNCE_SPEED_SCALE = 1.01  # 1% speed-up each bounce
+MAX_SPEED_MULT = 2.5    # cap ball speed increase
 SPLASH_LIFETIME = 0.5   # seconds splash lasts
 SPLASH_MAX_RADIUS = 4.0
 VELOCITY_SCALE = 0.05    # scale paddle movement to ball velocity
@@ -115,7 +116,6 @@ class Splash:
         progress = age / self.lifetime
         # exponential ease-out
         radius = self.max_radius * (1 - math.exp(-5 * progress))
-        print(f"Splash at {self.face} ({self.u:.1f},{self.v:.1f}) radius {radius:.1f} at time {t:.1f}")
         return radius
 
 class PongGame(BaseGame):
@@ -339,8 +339,6 @@ class PongGame(BaseGame):
         for s in self.splashes:
             if s.radius_at(current) is not None:
                 new_splashes.append(s)
-            else:
-                print(f"Splash at {s.face} ({s.u:.1f},{s.v:.1f}) expired at time {current:.1f}")
         self.splashes=new_splashes
 
     def _handle_face(self,face,bound,axis='x'):
@@ -356,27 +354,36 @@ class PongGame(BaseGame):
                 # Determine bounce axis
                 bounced=False
                 if abs(dx)>edge_zone or abs(dy)>edge_zone:
-                    # Edge hit – treat as wall parallel to paddle edge
-                    if axis=='x':
-                        if abs(dx)>=abs(dy):
-                            # side edges bounce horizontally (invert vy)
-                            self.ball.vy*=-1
-                            offset=(PADDLE_SIZE+BALL_RADIUS)*math.copysign(1,dx)
-                            self.ball.y=pad.cx+offset
-                        else:
-                            self.ball.vz*=-1
-                            offset=(PADDLE_SIZE+BALL_RADIUS)*math.copysign(1,dy)
-                            self.ball.z=pad.cy+offset
-                    else:  # axis=='y'
-                        if abs(dx)>=abs(dy):
+                    # Only count edge hits if the ball is moving towards the paddle center
+                    dir_to_paddle = np.array([pad.cx - self.ball.x, pad.cy - self.ball.y, pad.cy - self.ball.z])
+                    dot_product = np.dot(dir_to_paddle, np.array([self.ball.vx, self.ball.vy, self.ball.vz]))
+                    print(f"Dot product: {dot_product}")
+
+                    if dot_product > 0:
+                        # Ball is moving towards from the paddle center
+                        # Edge hit – treat as wall parallel to paddle edge
+                        if axis=='x':
                             self.ball.vx*=-1
-                            offset=(PADDLE_SIZE+BALL_RADIUS)*math.copysign(1,dx)
-                            self.ball.x=pad.cx+offset
-                        else:
-                            self.ball.vz*=-1
-                            offset=(PADDLE_SIZE+BALL_RADIUS)*math.copysign(1,dy)
-                            self.ball.z=pad.cy+offset
-                    bounced=True
+                            if abs(dx)>=abs(dy):
+                                # side edges bounce horizontally (invert vy)
+                                self.ball.vy*=-1
+                                offset=(PADDLE_SIZE+BALL_RADIUS)*math.copysign(1,dx)
+                                self.ball.y=pad.cx+offset
+                            else:
+                                self.ball.vz*=-1
+                                offset=(PADDLE_SIZE+BALL_RADIUS)*math.copysign(1,dy)
+                                self.ball.z=pad.cy+offset
+                        else:  # axis=='y'
+                            self.ball.vy*=-1
+                            if abs(dx)>=abs(dy):
+                                self.ball.vx*=-1
+                                offset=(PADDLE_SIZE+BALL_RADIUS)*math.copysign(1,dx)
+                                self.ball.x=pad.cx+offset
+                            else:
+                                self.ball.vz*=-1
+                                offset=(PADDLE_SIZE+BALL_RADIUS)*math.copysign(1,dy)
+                                self.ball.z=pad.cy+offset
+                        bounced=True
                 else:
                     # Centre bounce (normal)
                     if axis=='x':
@@ -595,7 +602,7 @@ class PongGame(BaseGame):
             max_score=max(self.scores.values())
             winners=[pid for pid,score in self.scores.items() if score==max_score]
             header="WINNERS" if len(winners)>1 else "WINNER"
-            names=",".join([pid.name for pid in winners])
+            names=",".join([PLAYER_TEAM[pid].name for pid in winners])
             controller_state.write_lcd(0,0,"GAME OVER")
             controller_state.write_lcd(0,1,f"{header}: ")
             controller_state.write_lcd(0,2,names[:20])
@@ -625,5 +632,4 @@ class PongGame(BaseGame):
     def _spawn_splash(self,face:str,u:float,v:float,color:RGB,birth_time:float|None=None):
         if birth_time is None:
             birth_time=time.monotonic()
-        print(f"Spawn splash at face {face} ({u:.1f},{v:.1f}) color {color}")
         self.splashes.append(Splash(face,u,v,color,birth_time)) 
