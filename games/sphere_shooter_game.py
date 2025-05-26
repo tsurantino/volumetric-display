@@ -62,6 +62,7 @@ class Sphere:
     team: TeamID  # Track which team shot this sphere
     owner: PlayerID  # Which player fired this sphere
     bounce_count: int = 0  # How many times the sphere has bounced off a wall/floor/ceiling
+    floor_bounced: bool = False  # Track if sphere has already bounced on the floor once
 
     # Physics constants
     GRAVITY = 100.0  # Gravity acceleration (reduced)
@@ -80,8 +81,8 @@ class Sphere:
         self.vy *= self.AIR_DAMPING
         self.vz *= self.AIR_DAMPING
 
-        # Apply additional ground friction when touching bottom (z = 0 plane)
-        if self.z - self.radius <= 0:
+        # Apply additional ground friction when touching floor BEFORE first bounce occurs
+        if not self.floor_bounced and self.z - self.radius <= 0:
             self.vx *= self.GROUND_FRICTION
             self.vy *= self.GROUND_FRICTION
 
@@ -119,9 +120,13 @@ class Sphere:
             bounced = True
 
         if self.z - self.radius < 0:
-            self.z = self.radius
-            self.vz = abs(self.vz) * self.ELASTICITY
-            bounced = True
+            if not self.floor_bounced:
+                # First time hitting floor: bounce normally
+                self.z = self.radius
+                self.vz = abs(self.vz) * self.ELASTICITY
+                bounced = True
+                self.floor_bounced = True
+            # After first bounce, no further collision response; sphere may fall below floor
         elif self.z + self.radius > length - 1:
             self.z = length - 1 - self.radius
             self.vz = -abs(self.vz) * self.ELASTICITY
@@ -408,13 +413,20 @@ class SphereShooterGame(BaseGame):
 
             # Check if sphere intersects hoop cylinder (radius in X-Z plane, level in Y-axis)
             vertical_distance = abs(sphere.z - self.hoop.level)
-            if vertical_distance <= sphere.radius:
+            if vertical_distance <= sphere.radius and sphere.vz < 0:
                 dx = sphere.x - self.hoop.x
                 dy_plane = sphere.y - self.hoop.z  # hoop.z is Y coordinate in plane
                 if math.sqrt(dx * dx + dy_plane * dy_plane) <= self.hoop.radius:
                     # Score for owner
                     self.player_scores[sphere.owner] += 1
                     continue  # Do not keep this sphere
+
+            # Remove spheres that have fallen outside the cube volume entirely
+            if (sphere.x < -sphere.radius or sphere.x > self.width - 1 + sphere.radius or
+                sphere.y < -sphere.radius or sphere.y > self.height - 1 + sphere.radius or
+                sphere.z < -sphere.radius or sphere.z > self.length - 1 + sphere.radius):
+                # Sphere is out of play – do not keep it
+                continue
 
             new_spheres.append(sphere)
 
