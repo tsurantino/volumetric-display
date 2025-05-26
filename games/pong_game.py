@@ -3,19 +3,26 @@ from games.util.game_util import Button, ButtonState
 from dataclasses import dataclass, field
 from typing import Dict, List, Set
 import random, math, time
+import itertools
 
 # ----------------------------
 # Basic config
 # ----------------------------
 
 JOIN_WINDOW = 10.0  # seconds to join before game starts
-PADDLE_SIZE = 2     # half-size (extent) of paddle square in voxels
+PADDLE_SIZE = 3     # half-size (extent) of paddle square in voxels
 BALL_SPEED = 20.0   # constant ball speed voxels/second
 BALL_RADIUS = 1.5
 PADDLE_MOVE_SPEED = 30.0  # voxels per second for smooth movement
 SPIKE_TIME_WINDOW = 0.1  # seconds after bounce in which a SELECT press counts as a spike
 SPIKE_STRENGTH = 0.5     # how strongly paddle motion influences spike
-WIN_SCORE = 11           # points needed to win a game
+WIN_SCORE = 5           # points needed to win a game
+EDGE_EPS = 0.3          # threshold for detecting edge hits on paddle
+BOUNCE_SPEED_SCALE = 1.05  # 5% speed-up each bounce
+MAX_SPEED_MULT = 2.0    # cap ball speed increase
+SPLASH_LIFETIME = 0.5   # seconds splash lasts
+SPLASH_MAX_RADIUS = 6.0
+VELOCITY_SCALE = 30.0    # scale paddle movement to ball velocity
 
 PLAYER_FACE = {
     PlayerID.P1: 'x-',   # -X face
@@ -85,9 +92,28 @@ class Particle:
     def expired(self,t):
         return t-self.birth>self.lifetime
 
+# Splash visual effect on faces/floor
+@dataclass
+class Splash:
+    face: str          # 'x-','x+','y-','y+','z-','z+'
+    u: float           # first coordinate in face plane
+    v: float           # second coordinate in face plane
+    color: RGB
+    birth: float
+    lifetime: float = SPLASH_LIFETIME
+    max_radius: float = SPLASH_MAX_RADIUS
+
+    def radius_at(self, t: float) -> float|None:
+        """Return current radius or None if expired at time t."""
+        age = t - self.birth
+        if age < 0 or age > self.lifetime:
+            return None
+        progress = age / self.lifetime
+        # exponential ease-out
+        return self.max_radius * (1 - math.exp(-5 * progress))
+
 class PongGame(BaseGame):
     def __init__(self,width=20,height=20,length=20,frameRate=30,config=None,input_handler=None):
-        super().__init__(width,height,length,frameRate,config,input_handler)
         self.game_phase = 'lobby' # lobby, running, gameover
         self.join_deadline = time.monotonic()+JOIN_WINDOW
         self.active_players:Set[PlayerID]=set()
@@ -96,7 +122,10 @@ class PongGame(BaseGame):
         self.server:PlayerID|None=None
         self.scores:Dict[PlayerID,str]={pid:0 for pid in PlayerID}
         self.particles:List[Particle]=[]
-        self.reset_game()
+        self.splashes:List[Splash]=[]
+        self.base_ball_speed=BALL_SPEED
+        self.current_ball_speed=BALL_SPEED
+        super().__init__(width,height,length,frameRate,config,input_handler)
 
     def reset_game(self):
         self.game_phase='lobby'
@@ -107,6 +136,8 @@ class PongGame(BaseGame):
         self.server=None
         self.scores={pid:0 for pid in PlayerID}
         self.particles=[]
+        self.splashes=[]
+        self.current_ball_speed=self.base_ball_speed
 
     # Utility to place paddle at center
     def _default_paddle(self,pid):
@@ -172,6 +203,7 @@ class PongGame(BaseGame):
         self.game_phase='running'
         self.server=random.choice(list(self.active_players))
         self.ball=Ball(0,0,0,0,0,0,attached_to=self.server)
+        self.current_ball_speed=self.base_ball_speed
         self._attach_ball_to_paddle()
 
     def _attach_ball_to_paddle(self):
@@ -195,18 +227,30 @@ class PongGame(BaseGame):
             self.ball.x=pad.cx
             self.ball.z=pad.cy
         self.ball.vx=self.ball.vy=self.ball.vz=0
+        # Reset speed when ball is being served
+        self.current_ball_speed=self.base_ball_speed
 
     def _launch_ball_from(self,pad:Paddle):
-        # direction bias from last movement? simplify random
-        dir_vector=[random.choice([-1,1]) for _ in range(3)]
+        # Strongly bias initial direction by latest paddle motion
+        rand_small=lambda: 0 #random.uniform(-0.05,0.05)
         if pad.face in ['x-','x+']:
-            dir_vector[0]=1 if pad.face=='x-' else -1
-        else:
-            dir_vector[1]=1 if pad.face=='y-' else -1
-        norm=math.sqrt(dir_vector[0]**2+dir_vector[1]**2+dir_vector[2]**2)
-        self.ball.vx=BALL_SPEED*dir_vector[0]/norm
-        self.ball.vy=BALL_SPEED*dir_vector[1]/norm
-        self.ball.vz=BALL_SPEED*dir_vector[2]/norm
+            outward = 1 if pad.face=='x-' else -1
+            dir_x = outward
+            dir_y = (pad.last_move_dx + rand_small()) * VELOCITY_SCALE
+            dir_z = (pad.last_move_dy + rand_small()) * VELOCITY_SCALE
+        else:  # y faces
+            outward = 1 if pad.face=='y-' else -1
+            dir_y = outward
+            dir_x = (pad.last_move_dx + rand_small()) * VELOCITY_SCALE
+            dir_z = (pad.last_move_dy + rand_small()) * VELOCITY_SCALE
+        # Normalise
+        print(f"Launching ball from {pad.face} with direction {dir_x}, {dir_y}, {dir_z} (input: {pad.last_move_dx}, {pad.last_move_dy})")
+        norm=math.sqrt(dir_x*dir_x+dir_y*dir_y+dir_z*dir_z)
+        dir_x/=norm; dir_y/=norm; dir_z/=norm
+        print(f"Normalised direction: {dir_x}, {dir_y}, {dir_z}")
+        self.ball.vx=self.current_ball_speed*dir_x
+        self.ball.vy=self.current_ball_speed*dir_y
+        self.ball.vz=self.current_ball_speed*dir_z
         self.ball.attached_to=None
 
     def update_game_state(self):
@@ -248,9 +292,11 @@ class PongGame(BaseGame):
             if self.ball.z<=BALL_RADIUS:
                 self.ball.z=BALL_RADIUS
                 self.ball.vz*=-1
+                self._after_bounce('z-',self.ball.x,self.ball.y)
             elif self.ball.z>=self.length-1-BALL_RADIUS:
                 self.ball.z=self.length-1-BALL_RADIUS
                 self.ball.vz*=-1
+                self._after_bounce('z+',self.ball.x,self.ball.y)
             # Check faces
             if self.ball.x<=BALL_RADIUS:
                 self._handle_face('x-',BALL_RADIUS)
@@ -271,6 +317,13 @@ class PongGame(BaseGame):
                 new_parts.append(p)
         self.particles=new_parts
 
+        # update splashes
+        new_splashes=[]
+        for s in self.splashes:
+            if s.radius_at(current) is not None:
+                new_splashes.append(s)
+        self.splashes=new_splashes
+
     def _handle_face(self,face,bound,axis='x'):
         if face in [pad.face for pad in self.paddles.values()]:
             # find player
@@ -280,17 +333,44 @@ class PongGame(BaseGame):
             dx= self.ball.y - pad.cx if axis=='x' else self.ball.x - pad.cx
             dy= self.ball.z - pad.cy
             if abs(dx)<=PADDLE_SIZE+BALL_RADIUS and abs(dy)<=PADDLE_SIZE+BALL_RADIUS:
-                # bounce
-                if axis=='x':
-                    self.ball.vx*=-1
-                    # Reposition ball just inside play area
-                    self.ball.x = BALL_RADIUS if face=='x-' else self.width-1-BALL_RADIUS
+                edge_zone=PADDLE_SIZE-EDGE_EPS
+                # Determine bounce axis
+                bounced=False
+                if abs(dx)>edge_zone or abs(dy)>edge_zone:
+                    # Edge hit – treat as wall parallel to paddle edge
+                    if axis=='x':
+                        if abs(dx)>=abs(dy):
+                            # side edges bounce horizontally (invert vy)
+                            self.ball.vy*=-1
+                            offset=(PADDLE_SIZE+BALL_RADIUS)*math.copysign(1,dx)
+                            self.ball.y=pad.cx+offset
+                        else:
+                            self.ball.vz*=-1
+                            offset=(PADDLE_SIZE+BALL_RADIUS)*math.copysign(1,dy)
+                            self.ball.z=pad.cy+offset
+                    else:  # axis=='y'
+                        if abs(dx)>=abs(dy):
+                            self.ball.vx*=-1
+                            offset=(PADDLE_SIZE+BALL_RADIUS)*math.copysign(1,dx)
+                            self.ball.x=pad.cx+offset
+                        else:
+                            self.ball.vz*=-1
+                            offset=(PADDLE_SIZE+BALL_RADIUS)*math.copysign(1,dy)
+                            self.ball.z=pad.cy+offset
+                    bounced=True
                 else:
-                    self.ball.vy*=-1
-                    self.ball.y = BALL_RADIUS if face=='y-' else self.height-1-BALL_RADIUS
-                # Possible spike redirect
-                self._apply_spike(pad,axis)
-                return
+                    # Centre bounce (normal)
+                    if axis=='x':
+                        self.ball.vx*=-1
+                        self.ball.x = BALL_RADIUS if face=='x-' else self.width-1-BALL_RADIUS
+                    else:
+                        self.ball.vy*=-1
+                        self.ball.y = BALL_RADIUS if face=='y-' else self.height-1-BALL_RADIUS
+                    bounced=True
+                if bounced:
+                    self._apply_spike(pad,axis)
+                    self._after_bounce(face,self.ball.y if axis=='x' else self.ball.x, self.ball.z)
+                    return
             else:
                 # miss -> point to server
                 scorer=self.server  # keep the serving player for explosion color
@@ -315,6 +395,8 @@ class PongGame(BaseGame):
         else:
             self.ball.vy*=-1
             self.ball.y = BALL_RADIUS if face=='y-' else self.height-1-BALL_RADIUS
+        # splash on empty wall
+        self._after_bounce(face, self.ball.y if axis=='x' else self.ball.x, self.ball.z)
 
     def get_player_score(self,player_id):
         return self.scores.get(player_id,0)
@@ -372,6 +454,38 @@ class PongGame(BaseGame):
             if 0<=vx<self.width and 0<=vy<self.height and 0<=vz<self.length:
                 raster.set_pix(vx,vy,vz,p.color)
 
+        # Draw splash effects (after particles so they overlay)
+        current=time.monotonic()
+        for s in self.splashes:
+            rad=s.radius_at(current)
+            if rad is None:
+                continue
+            # iterate voxel indices around centre
+            u_min=int(math.floor(s.u-rad))
+            u_max=int(math.ceil(s.u+rad))
+            v_min=int(math.floor(s.v-rad))
+            v_max=int(math.ceil(s.v+rad))
+            for uu in range(u_min,u_max+1):
+                for vv in range(v_min,v_max+1):
+                    # distance check to render thin ring (~1 voxel thickness)
+                    dist=math.hypot(uu+0.5-s.u, vv+0.5-s.v)
+                    if abs(dist-rad)<=0.6:
+                        # Map back to voxel coords based on face
+                        if s.face=='x-':
+                            x=0; y=uu; z=vv
+                        elif s.face=='x+':
+                            x=self.width-1; y=uu; z=vv
+                        elif s.face=='y-':
+                            y=0; x=uu; z=vv
+                        elif s.face=='y+':
+                            y=self.height-1; x=uu; z=vv
+                        elif s.face=='z-':
+                            z=0; x=uu; y=vv
+                        else:  # 'z+'
+                            z=self.length-1; x=uu; y=vv
+                        if 0<=x<self.width and 0<=y<self.height and 0<=z<self.length:
+                            raster.set_pix(x,y,z,s.color)
+
     def _spawn_explosion(self,x,y,z,color,count=30):
         for _ in range(count):
             speed=random.uniform(5,20)
@@ -403,15 +517,15 @@ class PongGame(BaseGame):
             return
         # Apply to ball velocity
         if axis=='x':
-            self.ball.vy += movx * BALL_SPEED * SPIKE_STRENGTH
-            self.ball.vz += movy * BALL_SPEED * SPIKE_STRENGTH
+            self.ball.vy += movx * self.current_ball_speed * SPIKE_STRENGTH
+            self.ball.vz += movy * self.current_ball_speed * SPIKE_STRENGTH
         else:  # axis=='y'
-            self.ball.vx += movx * BALL_SPEED * SPIKE_STRENGTH
-            self.ball.vz += movy * BALL_SPEED * SPIKE_STRENGTH
+            self.ball.vx += movx * self.current_ball_speed * SPIKE_STRENGTH
+            self.ball.vz += movy * self.current_ball_speed * SPIKE_STRENGTH
         # Renormalize to constant speed
         speed=math.sqrt(self.ball.vx**2+self.ball.vy**2+self.ball.vz**2)
         if speed>0:
-            scale=BALL_SPEED/speed
+            scale=self.current_ball_speed/speed
             self.ball.vx*=scale
             self.ball.vy*=scale
             self.ball.vz*=scale
@@ -452,3 +566,24 @@ class PongGame(BaseGame):
         else:
             controller_state.write_lcd(0,0,"PONG")
         await controller_state.commit() 
+
+    # ---------------- internal helpers ----------------
+    def _increase_ball_speed(self):
+        self.current_ball_speed=min(self.base_ball_speed*MAX_SPEED_MULT, self.current_ball_speed*BOUNCE_SPEED_SCALE)
+        # Renormalize velocity to new speed
+        speed=math.sqrt(self.ball.vx**2+self.ball.vy**2+self.ball.vz**2)
+        if speed>0:
+            scale=self.current_ball_speed/speed
+            self.ball.vx*=scale
+            self.ball.vy*=scale
+            self.ball.vz*=scale
+
+    def _after_bounce(self,face:str,u:float,v:float):
+        """Common logic after every bounce: speed-up and spawn splash."""
+        self._increase_ball_speed()
+        # splash colour in serving paddle team colour
+        col=PLAYER_TEAM[self.server].get_color() if self.server else RGB(255,255,255)
+        self._spawn_splash(face,u,v,col)
+
+    def _spawn_splash(self,face:str,u:float,v:float,color:RGB):
+        self.splashes.append(Splash(face,u,v,color,time.monotonic())) 
