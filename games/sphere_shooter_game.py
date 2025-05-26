@@ -10,7 +10,7 @@ from typing import List, Dict, Tuple, Set
 # Configuration mapping player roles to their team and view orientation
 PLAYER_CONFIG = {
     PlayerID.BLUE_P1: {
-        'team': TeamID.BLUE,
+        'team': TeamID.RED,
         'view': (1, 0, 0),  # -X view
         'left_dir': (0, 1, 0),  # -Y
         'right_dir': (0, -1, 0),  # +Y
@@ -18,7 +18,7 @@ PLAYER_CONFIG = {
         'down_dir': (0, 0, -1), # -Z
     },
     PlayerID.BLUE_P2: {
-        'team': TeamID.BLUE,
+        'team': TeamID.GREEN,
         'view': (0, 1, 0),  # -Y view
         'left_dir': (-1, 0, 0),  # +X
         'right_dir': (1, 0, 0), # -X
@@ -34,7 +34,7 @@ PLAYER_CONFIG = {
         'down_dir': (0, 0, -1), # -Z
     },
     PlayerID.ORANGE_P2: {
-        'team': TeamID.ORANGE,
+        'team': TeamID.BLUE,
         'view': (0, -1, 0),   # +Y view
         'left_dir': (1, 0, 0), # -X
         'right_dir': (-1, 0, 0),  # +X
@@ -209,8 +209,12 @@ class Hoop:
 class SphereShooterGame(BaseGame):
     def __init__(self, width=20, height=20, length=20, frameRate=30, config=None, input_handler=None):
         self.team_colors = {
+            TeamID.RED: RGB(255, 0, 0),    # Red team
+            TeamID.ORANGE: RGB(255, 165, 0),  # Orange team
+            TeamID.YELLOW: RGB(255, 255, 0),  # Yellow team
+            TeamID.GREEN: RGB(0, 255, 0),  # Green team
             TeamID.BLUE: RGB(0, 0, 255),    # Blue team
-            TeamID.ORANGE: RGB(255, 165, 0)  # Orange team
+            TeamID.PURPLE: RGB(255, 0, 255),  # Purple team
         }
 
         # Hoop parameters – must exist before BaseGame.__init__ triggers reset_game

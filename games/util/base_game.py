@@ -16,8 +16,12 @@ class PlayerID(Enum):
     ORANGE_P2 = 4  # Controls from +Y view
 
 class TeamID(Enum):
-    BLUE = 1
+    RED = 1
     ORANGE = 2
+    YELLOW = 3
+    GREEN = 4
+    BLUE = 5
+    PURPLE = 6
 
 class BaseGame:
     def __init__(self, width=20, height=20, length=20, frameRate=3, config=None, input_handler=None):
