@@ -26,10 +26,16 @@ SPLASH_MAX_RADIUS = 4.0
 VELOCITY_SCALE = 0.05    # scale paddle movement to ball velocity
 
 PLAYER_FACE = {
-    PlayerID.P1: 'x-',   # -X face
-    PlayerID.P2: 'y-',   # -Y
-    PlayerID.P3: 'x+', # +X
-    PlayerID.P4: 'y+'  # +Y
+    PlayerID.P1: 'x+',   # +X face
+    PlayerID.P2: 'y+',   # +Y
+    PlayerID.P3: 'x-', # -X
+    PlayerID.P4: 'y-'  # -Y
+}
+PLAYER_X_SIGN = {
+    PlayerID.P1: 1,
+    PlayerID.P2: -1,
+    PlayerID.P3: -1,
+    PlayerID.P4: 1,
 }
 PLAYER_TEAM = {
     PlayerID.P1: TeamID.RED,
@@ -202,9 +208,9 @@ class PongGame(BaseGame):
         # Immediate directional bump still
         dx=dy=0
         if button==Button.LEFT:
-            dx=-1
+            dx=1 * PLAYER_X_SIGN[player_id]
         elif button==Button.RIGHT:
-            dx=1
+            dx=-1 * PLAYER_X_SIGN[player_id]
         elif button==Button.UP:
             dy=1
         elif button==Button.DOWN:
@@ -287,9 +293,9 @@ class PongGame(BaseGame):
         for pad in self.paddles.values():
             dx=dy=0
             if Button.LEFT in pad.held_dirs:
-                dx-=1
+                dx-=PLAYER_X_SIGN[pad.player]
             if Button.RIGHT in pad.held_dirs:
-                dx+=1
+                dx+=PLAYER_X_SIGN[pad.player]
             if Button.UP in pad.held_dirs:
                 dy+=1
             if Button.DOWN in pad.held_dirs:
