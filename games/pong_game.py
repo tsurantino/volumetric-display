@@ -9,29 +9,29 @@ import random, math, time
 # ----------------------------
 
 JOIN_WINDOW = 10.0  # seconds to join before game starts
-PADDLE_SIZE = 3     # half-size (extent) of paddle square in voxels
-BALL_SPEED = 40.0   # constant ball speed voxels/second
+PADDLE_SIZE = 2     # half-size (extent) of paddle square in voxels
+BALL_SPEED = 20.0   # constant ball speed voxels/second
 BALL_RADIUS = 1.5
-PADDLE_MOVE_SPEED = 20.0  # voxels per second for smooth movement
+PADDLE_MOVE_SPEED = 30.0  # voxels per second for smooth movement
 SPIKE_TIME_WINDOW = 0.1  # seconds after bounce in which a SELECT press counts as a spike
 SPIKE_STRENGTH = 0.5     # how strongly paddle motion influences spike
 WIN_SCORE = 11           # points needed to win a game
 
 PLAYER_FACE = {
-    PlayerID.BLUE_P1: 'x-',   # -X face
-    PlayerID.BLUE_P2: 'y-',   # -Y
-    PlayerID.ORANGE_P1: 'x+', # +X
-    PlayerID.ORANGE_P2: 'y+'  # +Y
+    PlayerID.P1: 'x-',   # -X face
+    PlayerID.P2: 'y-',   # -Y
+    PlayerID.P3: 'x+', # +X
+    PlayerID.P4: 'y+'  # +Y
 }
-PLAYER_COLOR = {
-    PlayerID.BLUE_P1: RGB(0,128,255),
-    PlayerID.BLUE_P2: RGB(0,64,255),
-    PlayerID.ORANGE_P1: RGB(255,128,0),
-    PlayerID.ORANGE_P2: RGB(255,64,0)
+PLAYER_TEAM = {
+    PlayerID.P1: TeamID.RED,
+    PlayerID.P2: TeamID.ORANGE,
+    PlayerID.P3: TeamID.GREEN,
+    PlayerID.P4: TeamID.BLUE
 }
 
 # Tennis score progression
-TENNIS_ORDER = [0,15,30,40,'A','WIN']
+TENNIS_ORDER = ['LOVE','15','30','40','A','WIN']
 
 def next_tennis_score(cur):
     idx = TENNIS_ORDER.index(cur)
@@ -296,7 +296,7 @@ class PongGame(BaseGame):
                 scorer=self.server  # keep the serving player for explosion color
                 self.scores[scorer]+=1
                 # explosion with scorer color
-                self._spawn_explosion(self.ball.x,self.ball.y,self.ball.z,PLAYER_COLOR[scorer])
+                self._spawn_explosion(self.ball.x,self.ball.y,self.ball.z,PLAYER_TEAM[scorer].get_color())
                 # check game over
                 if self.scores[scorer]>=WIN_SCORE:
                     self.game_phase='gameover'
@@ -325,7 +325,7 @@ class PongGame(BaseGame):
     def render_game_state(self,raster):
         # Draw paddles
         for pid,pad in self.paddles.items():
-            col=PLAYER_COLOR[pid]
+            col=PLAYER_TEAM[pid].get_color()
             for u in range(-PADDLE_SIZE,PADDLE_SIZE+1):
                 for v in range(-PADDLE_SIZE,PADDLE_SIZE+1):
                     if pad.face=='x-':
@@ -427,8 +427,15 @@ class PongGame(BaseGame):
             controller_state.write_lcd(0,2,f"Start in: {remaining}s")
             controller_state.write_lcd(0,3,"Press SELECT")
         elif self.game_phase=='running':
-            my_score=self.get_player_score(player_id)
-            opp_score=self.get_opponent_score(player_id)
+            all_scores_same = True
+            score=self.get_player_score(player_id)
+            for pid in self.active_players:
+                if score != self.get_player_score(pid):
+                    all_scores_same = False
+                    break
+                
+            my_score=TENNIS_ORDER[self.get_player_score(player_id)] + (" ALL" if all_scores_same else "")
+            opp_score=TENNIS_ORDER[self.get_opponent_score(player_id)]
             controller_state.write_lcd(0,0,f"PLAYER {player_id.name}")
             controller_state.write_lcd(0,1,f"     YOU: {my_score}")
             controller_state.write_lcd(0,2,f"BEST OPP: {opp_score}")

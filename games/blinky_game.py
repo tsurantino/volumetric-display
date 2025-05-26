@@ -4,10 +4,10 @@ import random
 import time
 
 PLAYER_TO_COLOR = {
-    PlayerID.BLUE_P1: RGB(0, 128, 255),
-    PlayerID.BLUE_P2: RGB(128, 0, 255),
-    PlayerID.ORANGE_P1: RGB(255, 128, 0),
-    PlayerID.ORANGE_P2: RGB(255, 0, 128),
+    PlayerID.P1: RGB(0, 128, 255),
+    PlayerID.P2: RGB(128, 0, 255),
+    PlayerID.P3: RGB(255, 128, 0),
+    PlayerID.P4: RGB(255, 0, 128),
 }
 
 class BlinkyGame(BaseGame):

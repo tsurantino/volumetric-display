@@ -10,10 +10,10 @@ class Difficulty(Enum):
     HARD = 3
 
 class PlayerID(Enum):
-    BLUE_P1 = 1  # Controls from -X view
-    BLUE_P2 = 2  # Controls from -Y view
-    ORANGE_P1 = 3  # Controls from +X view
-    ORANGE_P2 = 4  # Controls from +Y view
+    P1 = 1  # Controls from -X view
+    P2 = 2  # Controls from -Y view
+    P3 = 3  # Controls from +X view
+    P4 = 4  # Controls from +Y view
 
 class TeamID(Enum):
     RED = 1
@@ -22,6 +22,19 @@ class TeamID(Enum):
     GREEN = 4
     BLUE = 5
     PURPLE = 6
+
+    def get_color(self, alternate=False):
+        color = {
+            TeamID.RED: RGB(255,0,0),
+            TeamID.ORANGE: RGB(255,128,0),
+            TeamID.YELLOW: RGB(255,255,0),
+            TeamID.GREEN: RGB(0,255,0),
+            TeamID.BLUE: RGB(0,0,255),
+            TeamID.PURPLE: RGB(128,0,128)
+        }[self]
+        if alternate:
+            return RGB(color.r ^ 32, color.g ^ 32, color.b ^ 32)
+        return color
 
 class BaseGame:
     def __init__(self, width=20, height=20, length=20, frameRate=3, config=None, input_handler=None):

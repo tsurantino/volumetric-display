@@ -11,7 +11,7 @@ TIME_LIMIT = 180
 
 # Configuration mapping player roles to their team and view orientation
 PLAYER_CONFIG = {
-    PlayerID.BLUE_P1: {
+    PlayerID.P1: {
         'team': TeamID.RED,
         'view': (1, 0, 0),  # -X view
         'left_dir': (0, 1, 0),  # -Y
@@ -19,7 +19,7 @@ PLAYER_CONFIG = {
         'up_dir': (0, 0, 1),    # +Z
         'down_dir': (0, 0, -1), # -Z
     },
-    PlayerID.BLUE_P2: {
+    PlayerID.P2: {
         'team': TeamID.GREEN,
         'view': (0, 1, 0),  # -Y view
         'left_dir': (-1, 0, 0),  # +X
@@ -27,7 +27,7 @@ PLAYER_CONFIG = {
         'up_dir': (0, 0, 1),    # +Z
         'down_dir': (0, 0, -1), # -Z
     },
-    PlayerID.ORANGE_P1: {
+    PlayerID.P3: {
         'team': TeamID.ORANGE,
         'view': (-1, 0, 0),   # +X view
         'left_dir': (0, -1, 0),  # +Y
@@ -35,7 +35,7 @@ PLAYER_CONFIG = {
         'up_dir': (0, 0, 1),    # +Z
         'down_dir': (0, 0, -1), # -Z
     },
-    PlayerID.ORANGE_P2: {
+    PlayerID.P4: {
         'team': TeamID.BLUE,
         'view': (0, -1, 0),   # +Y view
         'left_dir': (1, 0, 0), # -X

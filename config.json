@@ -83,10 +83,10 @@
     "scene": {
         "3d_snake": {
             "controller_mapping": {
-                "blue_p1": 0,
-                "blue_p2": 1,
-                "orange_p1": 2,
-                "orange_p2": 3
+                "p1": 0,
+                "p2": 1,
+                "p3": 2,
+                "p4": 3
             }
         }
     }
