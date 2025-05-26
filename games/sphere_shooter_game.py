@@ -198,6 +198,8 @@ class Cannon:
     charging: bool = False  # Whether the cannon is charging
     held_dirs: Set[Button] = field(default_factory=set)  # Directions currently held down
     draw_radius: float = 2.0  # Visual radius when rendering
+    cooldown_remaining: float = 0.0
+    cooldown_total: float = 0.0
 
 # ------------------------
 # Hoop representation
@@ -273,6 +275,10 @@ class SphereShooterGame(BaseGame):
         # Particle system
         self.particles: List[Particle] = []
 
+        # Track recent scoring timestamps per player for ON FIRE status
+        self.score_times: Dict[PlayerID, List[float]] = {pid: [] for pid in PlayerID}
+        self.on_fire_until: Dict[PlayerID, float] = {pid: 0.0 for pid in PlayerID}
+
         # Call parent constructor (this invokes reset_game)
         super().__init__(width, height, length, frameRate, config, input_handler)
 
@@ -287,6 +293,8 @@ class SphereShooterGame(BaseGame):
         self.spheres = []
         self.cannons = {}
         self.player_scores = {pid: 0 for pid in PlayerID}
+        self.score_times = {pid: [] for pid in PlayerID}
+        self.on_fire_until = {pid: 0.0 for pid in PlayerID}
 
         # Reset hoop
         self.hoop_angle = 0.0
@@ -348,6 +356,9 @@ class SphereShooterGame(BaseGame):
         # Handle SELECT button (charging and firing)
         if button == Button.SELECT:
             if button_state == ButtonState.PRESSED:
+                # Respect cooldown
+                if cannon.cooldown_remaining > 0:
+                    return
                 # Start charging when SELECT is pressed
                 cannon.select_hold_start = time.monotonic()
                 cannon.charging = True
@@ -419,6 +430,9 @@ class SphereShooterGame(BaseGame):
         cannon_speed = 5.0  # voxels per second
         move_amt = cannon_speed * dt
         for cannon in self.cannons.values():
+            if cannon.cooldown_remaining > 0:
+                cannon.cooldown_remaining = max(0.0, cannon.cooldown_remaining - dt)
+
             # Movement in face plane
             if Button.LEFT in cannon.held_dirs:
                 if cannon.face in ['x', '-y']:
@@ -458,14 +472,22 @@ class SphereShooterGame(BaseGame):
                 if sphere != other and not other.is_expired(current_time):
                     sphere.collide_with(other)
 
-            # Check if sphere intersects hoop cylinder (radius in X-Z plane, level in Y-axis)
-            vertical_distance = abs(sphere.z - self.hoop.level)
-            if vertical_distance <= sphere.radius and sphere.vz < 0:
+            # Score/rim logic only when centre is at or below hoop plane
+            if sphere.z <= self.hoop.level and sphere.vz < 0:
                 dx = sphere.x - self.hoop.x
                 dy_plane = sphere.y - self.hoop.z  # hoop.z is Y coordinate in plane
-                if math.sqrt(dx * dx + dy_plane * dy_plane) <= self.hoop.radius:
+                dist_plane = math.sqrt(dx*dx + dy_plane*dy_plane)
+                if dist_plane <= self.hoop.radius:
                     # Score for owner
                     self.player_scores[sphere.owner] += 1
+
+                    # Record score time
+                    self.score_times[sphere.owner].append(current_time)
+
+                    # Trim to last 6s
+                    self.score_times[sphere.owner] = [t for t in self.score_times[sphere.owner] if current_time - t <= 6.0]
+                    if len(self.score_times[sphere.owner]) > 3:
+                        self.on_fire_until[sphere.owner] = current_time + 5.0  # ON FIRE lasts 5s
 
                     # Hoop flash
                     self.hoop.flash_color = sphere.color
@@ -475,6 +497,20 @@ class SphereShooterGame(BaseGame):
                     self.spawn_particle_explosion(sphere)
 
                     continue  # Do not keep this sphere
+                else:
+                    # RIM COLLISION CHECK (use slightly larger virtual rim)
+                    rim_radius = self.hoop.radius + 1.0  # virtual rim size for bounce
+                    if dist_plane <= rim_radius + sphere.radius and dist_plane >= self.hoop.radius - sphere.radius:
+                        # Sphere hits rim if moving toward it
+                        if dist_plane != 0:
+                            nx = dx / dist_plane
+                            ny = dy_plane / dist_plane
+                            # Velocity component along rim normal (horizontal plane)
+                            vel_normal = sphere.vx * nx + sphere.vy * ny
+                            if vel_normal < 0:
+                                sphere.vx -= (1 + sphere.ELASTICITY) * vel_normal * nx
+                                sphere.vy -= (1 + sphere.ELASTICITY) * vel_normal * ny
+                                sphere.bounce_count += 1
 
             # Remove spheres that have fallen outside the cube volume entirely
             if (sphere.x < -sphere.radius or sphere.x > self.width - 1 + sphere.radius or
@@ -562,6 +598,12 @@ class SphereShooterGame(BaseGame):
             owner=cannon.owner
         )
         self.spheres.append(sphere)
+
+        # Set cooldown for cannon based on ON FIRE status
+        current_time = time.monotonic()
+        is_fire = self._is_on_fire(cannon.owner, current_time)
+        cannon.cooldown_total = 0.25 if is_fire else 0.5
+        cannon.cooldown_remaining = cannon.cooldown_total
 
     def spawn_particle_explosion(self, sphere: Sphere, count: int = 30):
         """Spawn particles at the sphere's location after scoring."""
@@ -711,14 +753,16 @@ class SphereShooterGame(BaseGame):
         cannon = self.cannons.get(player_id)
 
         controller_state.clear()
-        
+ 
+        current_time = time.monotonic()
+        on_fire = self._is_on_fire(player_id, current_time)
+
+        on_fire_string = " (ON FIRE)" if on_fire else ""
+        controller_state.write_lcd(0, 0, f"PLAYER {team_name}{on_fire_string}")       
         if cannon and cannon.charging and cannon.select_hold_start:
             # Show charging animation when SELECT is held
             charge_time = time.monotonic() - cannon.select_hold_start
             charge_percentage = min(1.0, charge_time / FULL_CHARGE_TIME)
-            
-            controller_state.write_lcd(0, 0, f"SPHERE SHOOTER")
-            controller_state.write_lcd(0, 1, f"TEAM: {team_name}")
             
             # Create a charging progress bar
             charge_bar = ""
@@ -729,13 +773,31 @@ class SphereShooterGame(BaseGame):
             controller_state.write_lcd(0, 2, f"CHARGING: {charge_percentage * 100:.0f}%")
             controller_state.write_lcd(0, 3, charge_bar)
         else:
-            # Regular game display
+
             my_score = self.get_player_score(player_id)
             opponent_score = self.get_opponent_score(player_id)
-            
-            controller_state.write_lcd(0, 0, "SPHERE SHOOTER")
+
+
             controller_state.write_lcd(0, 1, f"     YOU: {my_score}")
             controller_state.write_lcd(0, 2, f"BEST OPP: {opponent_score}")
-            controller_state.write_lcd(0, 3, "HOLD SELECT TO CHG") 
+            if on_fire:
+                remaining = max(0.0, self.on_fire_until[player_id] - current_time)
+                pct = remaining / 5.0
+                bar_len = 18
+                filled = int(pct * bar_len)
+                bar = "[" + "#" * filled + "-" * (bar_len - filled) + "]"
+                if cannon.cooldown_remaining > 0:
+                    controller_state.write_lcd(0, 3, "COOL")
+                else:
+                    controller_state.write_lcd(0, 3, bar)
+            else:
+                if cannon.cooldown_remaining > 0:
+                    status_line = "COOL"  # indicates cooling down
+                else:
+                    status_line = "READY"
+                controller_state.write_lcd(0, 3, status_line)
 
         await controller_state.commit()
+
+    def _is_on_fire(self, player_id: PlayerID, current_time: float) -> bool:
+        return current_time < self.on_fire_until.get(player_id, 0.0)
