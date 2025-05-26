@@ -9,10 +9,13 @@ import random, math, time
 # ----------------------------
 
 JOIN_WINDOW = 10.0  # seconds to join before game starts
-PADDLE_SIZE = 4     # half-size (extent) of paddle square in voxels
+PADDLE_SIZE = 3     # half-size (extent) of paddle square in voxels
 BALL_SPEED = 40.0   # constant ball speed voxels/second
 BALL_RADIUS = 1.5
 PADDLE_MOVE_SPEED = 20.0  # voxels per second for smooth movement
+SPIKE_TIME_WINDOW = 0.1  # seconds after bounce in which a SELECT press counts as a spike
+SPIKE_STRENGTH = 0.5     # how strongly paddle motion influences spike
+WIN_SCORE = 11           # points needed to win a game
 
 PLAYER_FACE = {
     PlayerID.BLUE_P1: 'x-',   # -X face
@@ -41,6 +44,9 @@ class Paddle:
     face: str
     player: PlayerID
     held_dirs: Set[Button] = field(default_factory=set)
+    last_select_press: float = -math.inf  # time of last SELECT press
+    last_move_dx: float = 0.0  # last frame movement dir in first axis of face
+    last_move_dy: float = 0.0  # last frame movement dir in second axis of face
 
 @dataclass
 class Ball:
@@ -117,6 +123,8 @@ class PongGame(BaseGame):
         # Track held dirs
         if player_id in self.paddles:
             pad=self.paddles[player_id]
+            if button==Button.SELECT and button_state==ButtonState.PRESSED:
+                pad.last_select_press=time.monotonic()
             if button in {Button.LEFT,Button.RIGHT,Button.UP,Button.DOWN}:
                 if button_state==ButtonState.PRESSED:
                     pad.held_dirs.add(button)
@@ -154,6 +162,8 @@ class PongGame(BaseGame):
         pad.cy+=dy
         # clamp to face bounds 0-7
         self._clamp_paddle(pad)
+        pad.last_move_dx=dx  # record movement direction this frame
+        pad.last_move_dy=dy
         if button==Button.SELECT and self.server==player_id and self.ball and self.ball.attached_to==player_id:
             # Serve
             self._launch_ball_from(pad)
@@ -221,6 +231,8 @@ class PongGame(BaseGame):
                 dy-=1
             pad.cx+=dx*PADDLE_MOVE_SPEED*dt
             pad.cy+=dy*PADDLE_MOVE_SPEED*dt
+            pad.last_move_dx=dx  # record movement direction this frame
+            pad.last_move_dy=dy
             self._clamp_paddle(pad)
 
         # Keep ball attached to paddle before serve
@@ -276,14 +288,23 @@ class PongGame(BaseGame):
                 else:
                     self.ball.vy*=-1
                     self.ball.y = BALL_RADIUS if face=='y-' else self.height-1-BALL_RADIUS
+                # Possible spike redirect
+                self._apply_spike(pad,axis)
                 return
             else:
                 # miss -> point to server
-                self.scores[self.server]+=1
-                # new server
+                scorer=self.server  # keep the serving player for explosion color
+                self.scores[scorer]+=1
+                # explosion with scorer color
+                self._spawn_explosion(self.ball.x,self.ball.y,self.ball.z,PLAYER_COLOR[scorer])
+                # check game over
+                if self.scores[scorer]>=WIN_SCORE:
+                    self.game_phase='gameover'
+                    self.game_over_active=True
+                    max_score=max(self.scores.values())
+                    self.winner_players=[pid for pid,sc in self.scores.items() if sc==max_score]
+                # new server becomes player who missed
                 self.server=player
-                # explosion
-                self._spawn_explosion(self.ball.x,self.ball.y,self.ball.z,PLAYER_COLOR[self.server])
                 self.ball.attached_to=self.server
                 self._attach_ball_to_paddle()
                 return
@@ -299,7 +320,7 @@ class PongGame(BaseGame):
         return self.scores.get(player_id,0)
 
     def get_opponent_score(self,player_id):
-        return max(self.scores.values())
+        return max((score for pid,score in self.scores.items() if pid!=player_id), default=0)
 
     def render_game_state(self,raster):
         # Draw paddles
@@ -370,4 +391,57 @@ class PongGame(BaseGame):
             max_cx=self.width-1-PADDLE_SIZE
             max_cy=self.length-1-PADDLE_SIZE
         pad.cx=max(PADDLE_SIZE,min(max_cx,pad.cx))
-        pad.cy=max(PADDLE_SIZE,min(max_cy,pad.cy)) 
+        pad.cy=max(PADDLE_SIZE,min(max_cy,pad.cy))
+
+    def _apply_spike(self,pad:Paddle,axis:str):
+        """Apply spike redirection if SELECT was recently pressed."""
+        if time.monotonic()-pad.last_select_press>SPIKE_TIME_WINDOW:
+            return
+        # Direction components from paddle motion
+        movx, movy = pad.last_move_dx, pad.last_move_dy
+        if movx==0 and movy==0:
+            return
+        # Apply to ball velocity
+        if axis=='x':
+            self.ball.vy += movx * BALL_SPEED * SPIKE_STRENGTH
+            self.ball.vz += movy * BALL_SPEED * SPIKE_STRENGTH
+        else:  # axis=='y'
+            self.ball.vx += movx * BALL_SPEED * SPIKE_STRENGTH
+            self.ball.vz += movy * BALL_SPEED * SPIKE_STRENGTH
+        # Renormalize to constant speed
+        speed=math.sqrt(self.ball.vx**2+self.ball.vy**2+self.ball.vz**2)
+        if speed>0:
+            scale=BALL_SPEED/speed
+            self.ball.vx*=scale
+            self.ball.vy*=scale
+            self.ball.vz*=scale
+
+    async def update_controller_display_state(self, controller_state, player_id):
+        """Update the LCD for this player according to game phase."""
+        current=time.monotonic()
+        controller_state.clear()
+        if self.game_phase=='lobby':
+            remaining=max(0,int(self.join_deadline-current))
+            controller_state.write_lcd(0,0,"PONG LOBBY")
+            controller_state.write_lcd(0,1,f"Players: {len(self.active_players)}/4")
+            controller_state.write_lcd(0,2,f"Start in: {remaining}s")
+            controller_state.write_lcd(0,3,"Press SELECT")
+        elif self.game_phase=='running':
+            my_score=self.get_player_score(player_id)
+            opp_score=self.get_opponent_score(player_id)
+            controller_state.write_lcd(0,0,f"PLAYER {player_id.name}")
+            controller_state.write_lcd(0,1,f"     YOU: {my_score}")
+            controller_state.write_lcd(0,2,f"BEST OPP: {opp_score}")
+            controller_state.write_lcd(0,3,"")
+        elif self.game_phase=='gameover':
+            max_score=max(self.scores.values())
+            winners=[pid for pid,score in self.scores.items() if score==max_score]
+            header="WINNERS" if len(winners)>1 else "WINNER"
+            names=",".join([pid.name for pid in winners])
+            controller_state.write_lcd(0,0,"GAME OVER")
+            controller_state.write_lcd(0,1,f"{header}: ")
+            controller_state.write_lcd(0,2,names[:20])
+            controller_state.write_lcd(0,3,"Hold SELECT to EXIT")
+        else:
+            controller_state.write_lcd(0,0,"PONG")
+        await controller_state.commit() 
