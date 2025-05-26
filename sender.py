@@ -168,9 +168,8 @@ def main():
             for controller, packets, _ in controller_packets:
                 for pkt in packets:
                     controller.sock.sendto(pkt, (controller.ip, controller.port))
-            for controller, _, sync_packet in controller_packets:
-                controller.sock.sendto(sync_packet, (controller.ip, controller.port))
-            time.sleep(0.01)  # Send updates at 100Hz
+            # Do not send sync packets; seems that the controller does not need them.
+            time.sleep(1 / 30.0)  # Send updates at 30Hz
 
     except KeyboardInterrupt:
         print("\n🛑 Transmission stopped by user.")
