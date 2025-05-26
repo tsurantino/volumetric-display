@@ -200,10 +200,11 @@ class Cannon:
 
 @dataclass
 class Hoop:
-    """A moving hoop that sits on the floor (y == 0) and slowly drifts around."""
-    x: float
-    z: float
+    """A moving hoop positioned at (x, y_level, z) where y_level is its height above the floor (z-axis in this game)."""
+    x: float  # position along width (x-axis)
+    z: float  # position along depth/height plane (y-axis of arena)
     radius: float
+    level: float = 0.0  # vertical position along z-axis (0 = floor)
     color: RGB = field(default_factory=lambda: RGB(255, 255, 255))  # default white
 
 class SphereShooterGame(BaseGame):
@@ -220,7 +221,7 @@ class SphereShooterGame(BaseGame):
         # Hoop parameters – must exist before BaseGame.__init__ triggers reset_game
         self.hoop_angle = 0.0
         hoop_radius = 3.0
-        self.hoop = Hoop(width / 2, height / 2, hoop_radius)
+        self.hoop = Hoop(width / 2, height / 2, hoop_radius, level=0.0)
 
         # Hoop motion state variables
         self.hoop_moving = False
@@ -246,6 +247,7 @@ class SphereShooterGame(BaseGame):
         self.hoop_angle = 0.0
         self.hoop.x = self.width / 2
         self.hoop.z = self.height / 2
+        self.hoop.level = 0.0
 
         self.game_over_active = False
         self.game_over_flash_state = {'count': 0, 'timer': 0, 'interval': 0.2, 'border_on': False}
@@ -336,12 +338,16 @@ class SphereShooterGame(BaseGame):
                 # Pick new random target position on floor within bounds
                 margin = self.hoop.radius + 1
                 target_x = random.uniform(margin, self.width - margin)
-                target_y = random.uniform(margin, self.height - margin)
+                target_z = random.uniform(margin, self.height - margin)
+                target_level = random.uniform(0, self.length / 2)  # up to halfway in vertical (z-axis length)
 
                 self.hoop_start_x = self.hoop.x
-                self.hoop_start_y = self.hoop.z  # stored as z
+                self.hoop_start_z = self.hoop.z
+                self.hoop_start_level = self.hoop.level
+
                 self.hoop_target_x = target_x
-                self.hoop_target_y = target_y
+                self.hoop_target_z = target_z
+                self.hoop_target_level = target_level
 
                 self.hoop_move_duration = random.uniform(2.0, 4.0)  # seconds to move
                 self.hoop_move_progress = 0.0
@@ -358,7 +364,8 @@ class SphereShooterGame(BaseGame):
             t = self.hoop_move_progress
             t_smooth = t * t * (3 - 2 * t)
             self.hoop.x = self.hoop_start_x + (self.hoop_target_x - self.hoop_start_x) * t_smooth
-            self.hoop.z = self.hoop_start_y + (self.hoop_target_y - self.hoop_start_y) * t_smooth
+            self.hoop.z = self.hoop_start_z + (self.hoop_target_z - self.hoop_start_z) * t_smooth
+            self.hoop.level = self.hoop_start_level + (self.hoop_target_level - self.hoop_start_level) * t_smooth
 
         # ---------- Move cannons based on held directions ----------
         cannon_speed = 5.0  # voxels per second
@@ -399,11 +406,12 @@ class SphereShooterGame(BaseGame):
                 if sphere != other and not other.is_expired(current_time):
                     sphere.collide_with(other)
 
-            # Check if sphere scores through hoop (on floor and within radius)
-            if (sphere.z - sphere.radius) <= 0.5:
+            # Check if sphere intersects hoop cylinder (radius in X-Z plane, level in Y-axis)
+            vertical_distance = abs(sphere.z - self.hoop.level)
+            if vertical_distance <= sphere.radius:
                 dx = sphere.x - self.hoop.x
-                dy = sphere.y - self.hoop.z  # treat hoop.z as y for floor plane
-                if math.sqrt(dx * dx + dy * dy) <= self.hoop.radius:
+                dy_plane = sphere.y - self.hoop.z  # hoop.z is Y coordinate in plane
+                if math.sqrt(dx * dx + dy_plane * dy_plane) <= self.hoop.radius:
                     # Score for owner
                     self.player_scores[sphere.owner] += 1
                     continue  # Do not keep this sphere
@@ -563,7 +571,9 @@ class SphereShooterGame(BaseGame):
                 dy = yy + 0.5 - self.hoop.z  # hoop.z stores y coordinate on floor plane
                 dist = math.sqrt(dx*dx + dy*dy)
                 if abs(dist - self.hoop.radius) <= ring_thickness:
-                    raster.set_pix(xx, yy, 0, self.hoop.color)
+                    z_level = int(round(self.hoop.level))
+                    if 0 <= z_level < self.length:
+                        raster.set_pix(xx, yy, z_level, self.hoop.color)
 
         # Draw game over border
         if self.game_over_active and self.game_over_flash_state['border_on']:
@@ -613,8 +623,8 @@ class SphereShooterGame(BaseGame):
             opponent_score = self.get_opponent_score(player_id)
             
             controller_state.write_lcd(0, 0, "SPHERE SHOOTER")
-            controller_state.write_lcd(0, 1, f"YOU: {my_score}")
+            controller_state.write_lcd(0, 1, f"     YOU: {my_score}")
             controller_state.write_lcd(0, 2, f"BEST OPP: {opponent_score}")
-            controller_state.write_lcd(0, 3, "HOLD SELECT TO CHARGE") 
+            controller_state.write_lcd(0, 3, "HOLD SELECT TO CHG") 
 
         await controller_state.commit()
