@@ -21,7 +21,7 @@ EDGE_EPS = 0.3          # threshold for detecting edge hits on paddle
 BOUNCE_SPEED_SCALE = 1.05  # 5% speed-up each bounce
 MAX_SPEED_MULT = 2.0    # cap ball speed increase
 SPLASH_LIFETIME = 0.5   # seconds splash lasts
-SPLASH_MAX_RADIUS = 6.0
+SPLASH_MAX_RADIUS = 4.0
 VELOCITY_SCALE = 0.05    # scale paddle movement to ball velocity
 
 PLAYER_FACE = {
@@ -114,7 +114,9 @@ class Splash:
             return None
         progress = age / self.lifetime
         # exponential ease-out
-        return self.max_radius * (1 - math.exp(-5 * progress))
+        radius = self.max_radius * (1 - math.exp(-5 * progress))
+        print(f"Splash at {self.face} ({self.u:.1f},{self.v:.1f}) radius {radius:.1f} at time {t:.1f}")
+        return radius
 
 class PongGame(BaseGame):
     def __init__(self,width=20,height=20,length=20,frameRate=30,config=None,input_handler=None):
@@ -264,6 +266,7 @@ class PongGame(BaseGame):
 
     def update_game_state(self):
         current=time.monotonic()
+        self._now = current  # expose to helpers for consistent timestamp
         if self.game_phase=='lobby':
             if current>=self.join_deadline and self.active_players:
                 self._start_match()
@@ -336,6 +339,8 @@ class PongGame(BaseGame):
         for s in self.splashes:
             if s.radius_at(current) is not None:
                 new_splashes.append(s)
+            else:
+                print(f"Splash at {s.face} ({s.u:.1f},{s.v:.1f}) expired at time {current:.1f}")
         self.splashes=new_splashes
 
     def _handle_face(self,face,bound,axis='x'):
@@ -615,8 +620,10 @@ class PongGame(BaseGame):
         self._increase_ball_speed()
         # splash colour in serving paddle team colour
         col=PLAYER_TEAM[self.server].get_color() if self.server else RGB(255,255,255)
-        self._spawn_splash(face,u,v,col)
+        self._spawn_splash(face,u,v,col,self._now)
 
-    def _spawn_splash(self,face:str,u:float,v:float,color:RGB):
+    def _spawn_splash(self,face:str,u:float,v:float,color:RGB,birth_time:float|None=None):
+        if birth_time is None:
+            birth_time=time.monotonic()
         print(f"Spawn splash at face {face} ({u:.1f},{v:.1f}) color {color}")
-        self.splashes.append(Splash(face,u,v,color,time.monotonic())) 
+        self.splashes.append(Splash(face,u,v,color,birth_time)) 
