@@ -6,6 +6,8 @@ import time
 from dataclasses import dataclass, field
 from typing import List, Dict, Tuple, Set
 
+TOP_SCORE = 10
+TIME_LIMIT = 180
 
 # Configuration mapping player roles to their team and view orientation
 PLAYER_CONFIG = {
@@ -279,6 +281,10 @@ class SphereShooterGame(BaseGame):
         self.score_times: Dict[PlayerID, List[float]] = {pid: [] for pid in PlayerID}
         self.on_fire_until: Dict[PlayerID, float] = {pid: 0.0 for pid in PlayerID}
 
+        # Game timing
+        self.game_start_time = time.monotonic()
+        self.winner_players: List[PlayerID] = []
+
         # Call parent constructor (this invokes reset_game)
         super().__init__(width, height, length, frameRate, config, input_handler)
 
@@ -295,6 +301,8 @@ class SphereShooterGame(BaseGame):
         self.player_scores = {pid: 0 for pid in PlayerID}
         self.score_times = {pid: [] for pid in PlayerID}
         self.on_fire_until = {pid: 0.0 for pid in PlayerID}
+        self.game_start_time = time.monotonic()
+        self.winner_players = []
 
         # Reset hoop
         self.hoop_angle = 0.0
@@ -535,12 +543,31 @@ class SphereShooterGame(BaseGame):
             new_particles.append(p)
         self.particles = new_particles
 
-        # Update game over flash state
-        if self.game_over_active:
-            if current_time - self.game_over_flash_state['timer'] >= self.game_over_flash_state['interval']:
+        # ---------- Win condition check ----------
+        if not self.game_over_active:
+            # Score win
+            top_score = max(self.player_scores.values())
+            if top_score >= TOP_SCORE:
+                winners = [pid for pid, s in self.player_scores.items() if s == top_score]
+            else:
+                # Time win
+                elapsed = current_time - self.game_start_time
+                winners = []
+                if elapsed >= TIME_LIMIT:
+                    top_score = max(self.player_scores.values())
+                    winners = [pid for pid, s in self.player_scores.items() if s == top_score]
+
+            if winners:
+                self.game_over_active = True
+                self.winner_players = winners
+                # Border color: single winner's team color else white
+                if len(winners) == 1:
+                    team = PLAYER_CONFIG[winners[0]]['team']
+                    self.game_over_flash_state['border_color'] = self.team_colors[team]
+                else:
+                    self.game_over_flash_state['border_color'] = RGB(255, 255, 255)
                 self.game_over_flash_state['timer'] = current_time
-                self.game_over_flash_state['border_on'] = not self.game_over_flash_state['border_on']
-                self.game_over_flash_state['count'] += 1
+                self.game_over_flash_state['border_on'] = True
 
     def launch_sphere(self, cannon: Cannon, charge_time: float):
         """Launch a sphere from a cannon."""
@@ -630,6 +657,7 @@ class SphereShooterGame(BaseGame):
 
     def render_game_state(self, raster):
         """Render the game state to the raster."""
+        current_time = time.monotonic()
         # Draw spheres
         for sphere in self.spheres:
             # Determine the bounding box for the sphere
@@ -729,21 +757,33 @@ class SphereShooterGame(BaseGame):
                         raster.set_pix(xx, yy, z_level, hoop_color)
 
         # Draw game over border
-        if self.game_over_active and self.game_over_flash_state['border_on']:
-            border_color = RGB(255, 0, 0)  # Red border
-            for x in range(self.width):
-                for y in range(self.height):
-                    for z in range(self.length):
-                        if (x == 0 or x == self.width - 1 or
-                            y == 0 or y == self.height - 1 or
-                            z == 0 or z == self.length - 1):
-                            raster.set_pix(x, y, z, border_color)
+        if self.game_over_active:
+            # toggle border flash
+            if current_time - self.game_over_flash_state['timer'] >= self.game_over_flash_state['interval']:
+                self.game_over_flash_state['timer'] = current_time
+                self.game_over_flash_state['border_on'] = not self.game_over_flash_state['border_on']
+            if self.game_over_flash_state['border_on']:
+                border_color = self.game_over_flash_state['border_color']
+                for x in range(self.width):
+                    for y in range(self.height):
+                        for z in range(self.length):
+                            if (x == 0 or x == self.width - 1 or
+                                y == 0 or y == self.height - 1 or
+                                z == 0 or z == self.length - 1):
+                                raster.set_pix(x, y, z, border_color)
 
     async def update_controller_display_state(self, controller_state, player_id):
         """Update the controller display for this player."""
         if self.game_over_active:
-            # Use default game over display
-            super().update_display(controller_state, player_id)
+            # Game over screen
+            controller_state.clear()
+            winners_names = ",".join([pid.name for pid in self.winner_players])
+            header = "WINNERS" if len(self.winner_players) > 1 else "WINNER"
+            controller_state.write_lcd(0, 0, "GAME OVER")
+            controller_state.write_lcd(0, 1, f"{header}: ")
+            controller_state.write_lcd(0, 2, winners_names[:20])
+            controller_state.write_lcd(0, 3, "Hold SELECT to EXIT")
+            await controller_state.commit()
             return
             
         config = PLAYER_CONFIG[player_id]
