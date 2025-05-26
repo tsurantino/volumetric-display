@@ -118,6 +118,14 @@ class Splash:
         radius = self.max_radius * (1 - math.exp(-5 * progress))
         return radius
 
+    def color_at(self, t: float) -> RGB|None:
+        """Return colour faded toward black based on age, or None if expired."""
+        age = t - self.birth
+        if age < 0 or age > self.lifetime:
+            return None
+        factor = max(0.0, 1.0 - age / self.lifetime)  # linear fade
+        return RGB(int(self.color.red * factor), int(self.color.green * factor), int(self.color.blue * factor))
+
 class PongGame(BaseGame):
     def __init__(self,width=20,height=20,length=20,frameRate=30,config=None,input_handler=None):
         self.game_phase = 'lobby' # lobby, running, gameover
@@ -337,8 +345,11 @@ class PongGame(BaseGame):
         # update splashes
         new_splashes=[]
         for s in self.splashes:
-            if s.radius_at(current) is not None:
-                new_splashes.append(s)
+            rad=s.radius_at(current)
+            col=s.color_at(current)
+            if rad is None or col is None:
+                continue
+            new_splashes.append(s)
         self.splashes=new_splashes
 
     def _handle_face(self,face,bound,axis='x'):
@@ -355,7 +366,16 @@ class PongGame(BaseGame):
                 bounced=False
                 if abs(dx)>edge_zone or abs(dy)>edge_zone:
                     # Only count edge hits if the ball is moving towards the paddle center
-                    dir_to_paddle = np.array([pad.cx - self.ball.x, pad.cy - self.ball.y, pad.cy - self.ball.z])
+                    # Map paddle (cx,cy) on its face to world XYZ coordinates
+                    if face == 'x-':         # negative X face at x = 0
+                        paddle_center_world = np.array([0, pad.cx, pad.cy])
+                    elif face == 'x+':       # positive X face at x = width-1
+                        paddle_center_world = np.array([self.width - 1, pad.cx, pad.cy])
+                    elif face == 'y-':       # negative Y face at y = 0
+                        paddle_center_world = np.array([pad.cx, 0, pad.cy])
+                    elif face == 'y+':       # positive Y face at y = height-1
+                        paddle_center_world = np.array([pad.cx, self.height - 1, pad.cy])
+                    dir_to_paddle = paddle_center_world - np.array([self.ball.x, self.ball.y, self.ball.z])
                     dot_product = np.dot(dir_to_paddle, np.array([self.ball.vx, self.ball.vy, self.ball.vz]))
                     print(f"Dot product: {dot_product}")
 
@@ -488,7 +508,8 @@ class PongGame(BaseGame):
         current=time.monotonic()
         for s in self.splashes:
             rad=s.radius_at(current)
-            if rad is None:
+            col=s.color_at(current)
+            if rad is None or col is None:
                 continue
             # iterate voxel indices around centre
             u_min=int(math.floor(s.u-rad))
@@ -514,7 +535,7 @@ class PongGame(BaseGame):
                         else:  # 'z+'
                             z=self.length-1; x=uu; y=vv
                         if 0<=x<self.width and 0<=y<self.height and 0<=z<self.length:
-                            raster.set_pix(x,y,z,s.color)
+                            raster.set_pix(x,y,z,col)
 
         # Flashing border on game over
         if self.game_over_active:
