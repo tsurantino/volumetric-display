@@ -123,7 +123,8 @@ class Splash:
         age = t - self.birth
         if age < 0 or age > self.lifetime:
             return None
-        factor = max(0.0, 1.0 - age / self.lifetime)  # linear fade
+        progress = age / self.lifetime
+        factor = math.exp(-3.0 * progress)  # exponential fade-out
         return RGB(int(self.color.red * factor), int(self.color.green * factor), int(self.color.blue * factor))
 
 class PongGame(BaseGame):
