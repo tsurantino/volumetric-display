@@ -4,9 +4,9 @@ use std::time::Duration;
 use tokio::time::interval;
 use tokio::sync::mpsc; // For channels between MIDI callback and MIDI processing task
 
-use midir::{MidiInput, MidiOutput, Ignore, MidiOutputConnection, MidiInputConnection, MidiOutputPort, MidiInputPort};
-use rosc::{OscPacket, OscMessage, OscType, encoder};
-use tracing::{info, warn, error, debug, Level};
+use midir::{MidiInput, MidiOutput, Ignore, MidiOutputConnection, MidiInputPort, MidiOutputPort};
+use rosc::{OscPacket, OscMessage, OscType, encoder, decoder::decode_udp};
+use tracing::{info, warn, error, Level};
 use tracing_subscriber::FmtSubscriber;
 use clap::Parser; // For argument parsing
 
@@ -24,6 +24,9 @@ const LED_GREEN: u8 = 1;
 const LED_RED: u8 = 3;
 const LED_ORANGE: u8 = 5;
 const LED_BLUE_ISH: u8 = 6;
+
+// OSC Buffer Size
+const OSC_BUF_SIZE: usize = 1536; // A common buffer size for OSC over UDP
 
 lazy_static::lazy_static! {
     static ref NOTE_GRID: [[u8; NUM_COLS]; NUM_ROWS] = {
@@ -74,9 +77,12 @@ impl AppState {
     }
 }
 
+// Define a common error type for the application
+type AppError = Box<dyn std::error::Error + Send + Sync>;
+
 // --- Main Application ---
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), AppError> { // Use AppError
     let subscriber = FmtSubscriber::builder().with_max_level(Level::DEBUG).finish();
     tracing::subscriber::set_global_default(subscriber).expect("Setting default subscriber failed");
     
@@ -87,14 +93,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let osc_in_addr_str = format!("{}:{}", args.in_host, args.in_port);
     let osc_out_addr_str = format!("{}:{}", args.out_host, args.out_port);
-    let osc_out_addr: SocketAddr = osc_out_addr_str.parse()?;
-    let osc_in_addr: SocketAddr = osc_in_addr_str.parse()?;
+    
+    let osc_out_addr: SocketAddr = osc_out_addr_str.parse().map_err(AppError::from)?;
+    let osc_in_addr: SocketAddr = osc_in_addr_str.parse().map_err(AppError::from)?;
 
     let midi_out_conn = match setup_midi_output() {
         Ok(conn) => Arc::new(Mutex::new(conn)),
         Err(e) => {
             error!("Failed to setup MIDI output: {}. LED feedback will be disabled.", e);
-            return Err(Box::new(std::io::Error::new(std::io::ErrorKind::Other, e)));
+            return Err(e.into()); // Convert String error to AppError
         }
     };
     
@@ -117,28 +124,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("OSC Output: {}", osc_out_addr);
     info!("Control mapper running...");
 
-    tokio::try_join!(
+    match tokio::try_join!(
         osc_input_task,
         midi_input_setup_task,
         midi_processing_task,
         osc_sender_task
-    )?;
+    ) {
+        Ok((res1, res2, res3, res4)) => {
+            res1?; // Propagate AppError from handle_osc_input
+            res2.map_err(|s| AppError::from(Box::new(std::io::Error::new(std::io::ErrorKind::Other,s))))?;
+            res3?; // Propagate AppError from process_midi_messages
+            res4?; // Propagate AppError from osc_sender_loop
+        }
+        Err(e) => return Err(AppError::from(e)), // JoinError
+    }
 
     Ok(())
 }
 
 // --- OSC Input Handling ---
-asynchronous fn handle_osc_input(app_state: Arc<Mutex<AppState>>, addr: SocketAddr) {
+async fn handle_osc_input(app_state: Arc<Mutex<AppState>>, addr: SocketAddr) -> Result<(), AppError> {
     info!("Starting OSC input listener on {}", addr);
-    let socket = UdpSocket::bind(addr).expect("Failed to bind OSC input socket");
-    socket.set_nonblocking(true).expect("Failed to set non-blocking on OSC socket");
-    let mut buf = [0u8; rosc::decoder::MTU];
+    let socket = UdpSocket::bind(addr).map_err(AppError::from)?;
+    socket.set_nonblocking(true).map_err(AppError::from)?;
+    let mut buf = [0u8; OSC_BUF_SIZE]; 
     loop {
         match socket.recv_from(&mut buf) {
-            Ok((size, _src_addr)) => {
-                let packet = rosc::decoder::decode(&buf[..size]);
-                match packet {
-                    Ok(OscPacket::Message(msg)) => {
+            Ok((size, _src_addr)) => { 
+                match decode_udp(&buf[..size]) { 
+                    Ok((_remaining_buf, OscPacket::Message(msg))) => {
                         if msg.addr.starts_with("/lfo/") {
                             if let Some(row_str) = msg.addr.split('/').last() {
                                 if let Ok(lfo_source_on_grid) = row_str.parse::<usize>() {
@@ -163,7 +177,7 @@ asynchronous fn handle_osc_input(app_state: Arc<Mutex<AppState>>, addr: SocketAd
                             }
                         }
                     }
-                    Ok(OscPacket::Bundle(bundle)) => {
+                    Ok((_remaining_buf, OscPacket::Bundle(bundle))) => {
                         warn!("Received OSC Bundle, not yet handled: {:?}", bundle);
                     }
                     Err(e) => {
@@ -177,14 +191,14 @@ asynchronous fn handle_osc_input(app_state: Arc<Mutex<AppState>>, addr: SocketAd
             }
             Err(e) => {
                 error!("Error receiving from OSC socket: {}", e);
-                break;
+                return Err(e.into());
             }
         }
     }
 }
 
 // --- MIDI Input Handling (Corrected Lifetime Management) ---
-asynchronous fn keep_midi_input_alive(midi_tx: mpsc::Sender<Vec<u8>>) -> Result<(), String> {
+async fn keep_midi_input_alive(midi_tx: mpsc::Sender<Vec<u8>>) -> Result<(), String> {
     let mut midi_in = MidiInput::new("ArtNetMapperRust_Input")
         .map_err(|e| format!("Failed to create MidiInput: {}", e))?;
     midi_in.ignore(Ignore::None);
@@ -276,10 +290,14 @@ fn _refresh_grid_leds(midi_out_conn: &mut MidiOutputConnection, state: &AppState
             let mut led_velocity = LED_OFF;
 
             if actual_r < TOTAL_ROWS && actual_c < TOTAL_COLS {
+                let current_lfo_bank_for_check = state.current_lfo_bank;
                 let is_any_lfo_in_current_bank_view_mapped_to_col = (0..NUM_ROWS)
-                    .any(|r_check| state.mapping[state.current_lfo_bank * NUM_ROWS + r_check][actual_c]);
+                    .any(|r_check| {
+                        let map_r_idx = current_lfo_bank_for_check * NUM_ROWS + r_check;
+                        map_r_idx < TOTAL_ROWS && state.mapping[map_r_idx][actual_c]
+                    });
 
-                if state.fader_override_active[state.current_lfo_bank][actual_c] && is_any_lfo_in_current_bank_view_mapped_to_col {
+                if state.fader_override_active[current_lfo_bank_for_check][actual_c] && is_any_lfo_in_current_bank_view_mapped_to_col {
                     led_velocity = LED_RED;
                 } else if state.mapping[actual_r][actual_c] {
                     led_velocity = LED_GREEN;
@@ -291,7 +309,7 @@ fn _refresh_grid_leds(midi_out_conn: &mut MidiOutputConnection, state: &AppState
 }
 
 // --- MIDI Message Processing ---
-asynchronous fn process_midi_messages(app_state: Arc<Mutex<AppState>>, mut midi_rx: mpsc::Receiver<Vec<u8>>, midi_out_conn_arc: Arc<Mutex<MidiOutputConnection>>) {
+async fn process_midi_messages(app_state: Arc<Mutex<AppState>>, mut midi_rx: mpsc::Receiver<Vec<u8>>, midi_out_conn_arc: Arc<Mutex<MidiOutputConnection>>) -> Result<(), AppError> {
     info!("Starting MIDI message processing task.");
     while let Some(message_data) = midi_rx.recv().await {
         if message_data.is_empty() { continue; }
@@ -299,7 +317,7 @@ asynchronous fn process_midi_messages(app_state: Arc<Mutex<AppState>>, mut midi_
         let data1 = if message_data.len() > 1 { message_data[1] } else { 0 };
         let data2 = if message_data.len() > 2 { message_data[2] } else { 0 };
 
-        let mut state_changed = false;
+        let mut _state_changed_for_debug = false;
         let mut full_refresh_needed = false;
         let mut bank_led_refresh_needed = false;
 
@@ -307,22 +325,22 @@ asynchronous fn process_midi_messages(app_state: Arc<Mutex<AppState>>, mut midi_
             let note = data1;
             let velocity = data2;
             if velocity > 0 { // True note-on
-                let mut state = app_state.lock().unwrap();
+                let mut state_guard = app_state.lock().unwrap();
                 if (82..=85).contains(&note) { // LFO Bank
                     let new_lfo_bank = (note - 82) as usize;
-                    if new_lfo_bank != state.current_lfo_bank {
-                        state.current_lfo_bank = new_lfo_bank;
+                    if new_lfo_bank != state_guard.current_lfo_bank {
+                        state_guard.current_lfo_bank = new_lfo_bank;
                         info!("Switched to LFO Bank {}", new_lfo_bank);
-                        state_changed = true;
+                        _state_changed_for_debug = true;
                         full_refresh_needed = true;
                         bank_led_refresh_needed = true;
                     }
                 } else if (86..=89).contains(&note) { // Effect Bank
                     let new_effect_bank = (note - 86) as usize;
-                    if new_effect_bank != state.current_effect_bank {
-                        state.current_effect_bank = new_effect_bank;
+                    if new_effect_bank != state_guard.current_effect_bank {
+                        state_guard.current_effect_bank = new_effect_bank;
                         info!("Switched to Effect Bank {}", new_effect_bank);
-                        state_changed = true;
+                        _state_changed_for_debug = true;
                         full_refresh_needed = true;
                         bank_led_refresh_needed = true;
                     }
@@ -341,67 +359,74 @@ asynchronous fn process_midi_messages(app_state: Arc<Mutex<AppState>>, mut midi_
                     }
 
                     if let (Some(r_pv), Some(c_pv)) = (r_pressed_vis, c_pressed_vis) {
-                        let actual_r_pressed = state.current_lfo_bank * NUM_ROWS + r_pv;
-                        let actual_c_pressed = state.current_effect_bank * NUM_COLS + c_pv;
+                        let current_lfo_bank = state_guard.current_lfo_bank;
+                        let current_effect_bank = state_guard.current_effect_bank;
+                        let actual_r_pressed = current_lfo_bank * NUM_ROWS + r_pv;
+                        let actual_c_pressed = current_effect_bank * NUM_COLS + c_pv;
+
                         if actual_c_pressed < TOTAL_COLS && actual_r_pressed < TOTAL_ROWS {
-                            if state.fader_override_active[state.current_lfo_bank][actual_c_pressed] {
-                                state.fader_override_active[state.current_lfo_bank][actual_c_pressed] = false;
-                                info!("Fader override on actual col {} for LFO bank {} deactivated by button", actual_c_pressed, state.current_lfo_bank);
-                                state_changed = true;
+                            if state_guard.fader_override_active[current_lfo_bank][actual_c_pressed] {
+                                state_guard.fader_override_active[current_lfo_bank][actual_c_pressed] = false;
+                                info!("Fader override on actual col {} for LFO bank {} deactivated by button", actual_c_pressed, current_lfo_bank);
+                                _state_changed_for_debug = true;
                             }
-                            if state.mapping[actual_r_pressed][actual_c_pressed] {
-                                state.mapping[actual_r_pressed][actual_c_pressed] = false;
+                            if state_guard.mapping[actual_r_pressed][actual_c_pressed] {
+                                state_guard.mapping[actual_r_pressed][actual_c_pressed] = false;
                             } else {
                                 for r_iter_vis in 0..NUM_ROWS {
-                                    let actual_r_iter = state.current_lfo_bank * NUM_ROWS + r_iter_vis;
+                                    let actual_r_iter = current_lfo_bank * NUM_ROWS + r_iter_vis;
                                     if actual_r_iter != actual_r_pressed && actual_r_iter < TOTAL_ROWS {
-                                        state.mapping[actual_r_iter][actual_c_pressed] = false;
+                                        state_guard.mapping[actual_r_iter][actual_c_pressed] = false;
                                     }
                                 }
-                                state.mapping[actual_r_pressed][actual_c_pressed] = true;
+                                state_guard.mapping[actual_r_pressed][actual_c_pressed] = true;
                             }
-                            state_changed = true;
+                            _state_changed_for_debug = true;
                             full_refresh_needed = true;
                         } else { warn!("Calculated actual pressed note out of bounds!"); }
                     }
                 }
-            }
+            } 
         } else if status & 0xF0 == 0xB0 { // Control Change (Faders)
             let cc_number = data1;
             let cc_value = data2;
             if (48..=55).contains(&cc_number) { // Faders CC 48-55
                 let col_index_on_grid = (cc_number - 48) as usize;
-                let mut state = app_state.lock().unwrap();
-                let actual_col_idx_fader = state.current_effect_bank * NUM_COLS + col_index_on_grid;
+                let mut state_guard = app_state.lock().unwrap();
+                let current_lfo_bank = state_guard.current_lfo_bank;
+                let current_effect_bank = state_guard.current_effect_bank;
+                let actual_col_idx_fader = current_effect_bank * NUM_COLS + col_index_on_grid;
+
                 if actual_col_idx_fader < TOTAL_COLS {
-                    if !state.fader_override_active[state.current_lfo_bank][actual_col_idx_fader] {
-                        info!("Fader CC {} taking control of actual col {} for LFO Bank {}", cc_number, actual_col_idx_fader, state.current_lfo_bank);
+                    if !state_guard.fader_override_active[current_lfo_bank][actual_col_idx_fader] {
+                        info!("Fader CC {} taking control of actual col {} for LFO Bank {}", cc_number, actual_col_idx_fader, current_lfo_bank);
                     }
-                    state.fader_override_active[state.current_lfo_bank][actual_col_idx_fader] = true;
-                    state.fader_override_value[state.current_lfo_bank][actual_col_idx_fader] = cc_value as f32 / 127.0;
-                    state_changed = true;
+                    state_guard.fader_override_active[current_lfo_bank][actual_col_idx_fader] = true;
+                    state_guard.fader_override_value[current_lfo_bank][actual_col_idx_fader] = cc_value as f32 / 127.0;
+                    _state_changed_for_debug = true;
                     full_refresh_needed = true;
                 } else { warn!("Calculated actual fader column out of bounds!"); }
             }
         }
 
-        if state_changed {
+        if bank_led_refresh_needed || full_refresh_needed {
             let mut midi_out_guard = midi_out_conn_arc.lock().unwrap();
-            let locked_app_state = app_state.lock().unwrap();
+            let locked_app_state_for_led = app_state.lock().unwrap(); 
             if bank_led_refresh_needed {
-                _update_bank_select_leds(&mut midi_out_guard, &locked_app_state);
+                _update_bank_select_leds(&mut midi_out_guard, &locked_app_state_for_led);
             }
             if full_refresh_needed {
-                _refresh_grid_leds(&mut midi_out_guard, &locked_app_state);
+                _refresh_grid_leds(&mut midi_out_guard, &locked_app_state_for_led);
             }
         }
     }
+    Ok(())
 }
 
 // --- OSC Sender Loop ---
-asynchronous fn osc_sender_loop(app_state: Arc<Mutex<AppState>>, target_addr: SocketAddr) {
+async fn osc_sender_loop(app_state: Arc<Mutex<AppState>>, target_addr: SocketAddr) -> Result<(), AppError> {
     info!("Starting OSC sender loop for {}", target_addr);
-    let socket = UdpSocket::bind("0.0.0.0:0").expect("Failed to bind OSC sender socket");
+    let socket = UdpSocket::bind("0.0.0.0:0").map_err(AppError::from)?;
     let mut interval = interval(Duration::from_millis(50));
     let mut osc_sent_values = vec![-1.0f32; TOTAL_COLS];
     loop {
@@ -420,7 +445,7 @@ asynchronous fn osc_sender_loop(app_state: Arc<Mutex<AppState>>, target_addr: So
             if found_active_driver_for_col { continue; }
             for actual_lfo_row_idx in (0..TOTAL_ROWS).rev() {
                 if state.mapping[actual_lfo_row_idx][actual_col_idx] {
-                    next_osc_values_to_send[actual_lfo_row_idx] = state.latest_lfo_values[actual_lfo_row_idx];
+                    next_osc_values_to_send[actual_col_idx] = state.latest_lfo_values[actual_lfo_row_idx];
                     break;
                 }
             }
