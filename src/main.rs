@@ -307,20 +307,17 @@ fn _refresh_grid_leds(midi_out_conn: &mut MidiOutputConnection, state: &AppState
             let actual_c = state.current_effect_bank * NUM_COLS + c_vis;
             let mut led_velocity = LED_OFF;
 
-            if actual_r < TOTAL_ROWS && actual_c < TOTAL_COLS {
+            if actual_r < TOTAL_ROWS && actual_c < TOTAL_COLS { // Check bounds for mapping access
                 let current_lfo_bank_for_check = state.current_lfo_bank;
-                let is_any_lfo_in_current_bank_view_mapped_to_col = (0..NUM_ROWS)
-                    .any(|r_check| {
-                        let map_r_idx = current_lfo_bank_for_check * NUM_ROWS + r_check;
-                        map_r_idx < TOTAL_ROWS && state.mapping[map_r_idx][actual_c]
-                    });
 
-                if state.fader_override_active[current_lfo_bank_for_check][actual_c] && is_any_lfo_in_current_bank_view_mapped_to_col {
+                // Issue 2 Fix: LED turns RED if fader override is active for the current LFO bank's view 
+                // of that column AND that specific cell's mapping is true.
+                if state.fader_override_active[current_lfo_bank_for_check][actual_c] && state.mapping[actual_r][actual_c] {
                     led_velocity = LED_RED;
                 } else if state.mapping[actual_r][actual_c] {
                     led_velocity = LED_GREEN;
                 }
-            }
+            } // If out of bounds, led_velocity remains LED_OFF
             send_midi_note(midi_out_conn, NOTE_GRID[r_vis][c_vis], led_velocity);
         }
     }
@@ -335,106 +332,110 @@ async fn process_midi_messages(app_state: Arc<Mutex<AppState>>, mut midi_rx: mps
         let data1 = if message_data.len() > 1 { message_data[1] } else { 0 };
         let data2 = if message_data.len() > 2 { message_data[2] } else { 0 };
 
-        let mut _state_changed_for_debug = false;
         let mut full_refresh_needed = false;
         let mut bank_led_refresh_needed = false;
 
-        if status & 0xF0 == 0x90 { // Note-on
-            let note = data1;
-            let velocity = data2;
-            if velocity > 0 { // True note-on
-                let mut state_guard = app_state.lock().unwrap();
-                if (82..=85).contains(&note) { // LFO Bank
-                    let new_lfo_bank = (note - 82) as usize;
-                    if new_lfo_bank != state_guard.current_lfo_bank {
-                        state_guard.current_lfo_bank = new_lfo_bank;
-                        info!("Switched to LFO Bank {}", new_lfo_bank);
-                        _state_changed_for_debug = true;
-                        full_refresh_needed = true;
-                        bank_led_refresh_needed = true;
-                    }
-                } else if (86..=89).contains(&note) { // Effect Bank
-                    let new_effect_bank = (note - 86) as usize;
-                    if new_effect_bank != state_guard.current_effect_bank {
-                        state_guard.current_effect_bank = new_effect_bank;
-                        info!("Switched to Effect Bank {}", new_effect_bank);
-                        _state_changed_for_debug = true;
-                        full_refresh_needed = true;
-                        bank_led_refresh_needed = true;
-                    }
-                } else { // Grid button
-                    let mut r_pressed_vis: Option<usize> = None;
-                    let mut c_pressed_vis: Option<usize> = None;
-                    for r_vis in 0..NUM_ROWS {
-                        for c_vis in 0..NUM_COLS {
-                            if NOTE_GRID[r_vis][c_vis] == note {
-                                r_pressed_vis = Some(r_vis);
-                                c_pressed_vis = Some(c_vis);
-                                break;
-                            }
+        { // Scope for the AppState write lock
+            let mut state_guard = app_state.lock().unwrap();
+            if status & 0xF0 == 0x90 { // Note-on
+                let note = data1;
+                let velocity = data2;
+                if velocity > 0 { // True note-on
+                    if (82..=85).contains(&note) { // LFO Bank
+                        let new_lfo_bank = (note - 82) as usize;
+                        if new_lfo_bank != state_guard.current_lfo_bank {
+                            state_guard.current_lfo_bank = new_lfo_bank;
+                            info!("Switched to LFO Bank {}", new_lfo_bank);
+                            full_refresh_needed = true;
+                            bank_led_refresh_needed = true;
                         }
-                        if r_pressed_vis.is_some() { break; }
-                    }
-
-                    if let (Some(r_pv), Some(c_pv)) = (r_pressed_vis, c_pressed_vis) {
-                        let current_lfo_bank = state_guard.current_lfo_bank;
-                        let current_effect_bank = state_guard.current_effect_bank;
-                        let actual_r_pressed = current_lfo_bank * NUM_ROWS + r_pv;
-                        let actual_c_pressed = current_effect_bank * NUM_COLS + c_pv;
-
-                        if actual_c_pressed < TOTAL_COLS && actual_r_pressed < TOTAL_ROWS {
-                            if state_guard.fader_override_active[current_lfo_bank][actual_c_pressed] {
-                                state_guard.fader_override_active[current_lfo_bank][actual_c_pressed] = false;
-                                info!("Fader override on actual col {} for LFO bank {} deactivated by button", actual_c_pressed, current_lfo_bank);
-                                _state_changed_for_debug = true;
+                    } else if (86..=89).contains(&note) { // Effect Bank
+                        let new_effect_bank = (note - 86) as usize;
+                        if new_effect_bank != state_guard.current_effect_bank {
+                            state_guard.current_effect_bank = new_effect_bank;
+                            info!("Switched to Effect Bank {}", new_effect_bank);
+                            full_refresh_needed = true;
+                            bank_led_refresh_needed = true;
+                        }
+                    } else { // Grid button
+                        let mut r_pressed_vis: Option<usize> = None;
+                        let mut c_pressed_vis: Option<usize> = None;
+                        for r_vis in 0..NUM_ROWS {
+                            for c_vis in 0..NUM_COLS {
+                                if NOTE_GRID[r_vis][c_vis] == note {
+                                    r_pressed_vis = Some(r_vis);
+                                    c_pressed_vis = Some(c_vis);
+                                    break;
+                                }
                             }
-                            if state_guard.mapping[actual_r_pressed][actual_c_pressed] {
-                                state_guard.mapping[actual_r_pressed][actual_c_pressed] = false;
-                            } else {
-                                for r_iter_vis in 0..NUM_ROWS {
-                                    let actual_r_iter = current_lfo_bank * NUM_ROWS + r_iter_vis;
-                                    if actual_r_iter != actual_r_pressed && actual_r_iter < TOTAL_ROWS {
-                                        state_guard.mapping[actual_r_iter][actual_c_pressed] = false;
+                            if r_pressed_vis.is_some() { break; }
+                        }
+
+                        if let (Some(r_pv), Some(c_pv)) = (r_pressed_vis, c_pressed_vis) {
+                            let current_lfo_bank = state_guard.current_lfo_bank;
+                            let current_effect_bank = state_guard.current_effect_bank;
+                            let actual_r_pressed = current_lfo_bank * NUM_ROWS + r_pv;
+                            let actual_c_pressed = current_effect_bank * NUM_COLS + c_pv;
+
+                            if actual_c_pressed < TOTAL_COLS && actual_r_pressed < TOTAL_ROWS {
+                                // Issue 1 Fix: Deactivate fader override for this actual_c_pressed across ALL LFO banks.
+                                let mut fader_override_deactivated_for_col = false;
+                                for lfo_bank_idx in 0..NUM_LFO_BANKS {
+                                    if state_guard.fader_override_active[lfo_bank_idx][actual_c_pressed] {
+                                        state_guard.fader_override_active[lfo_bank_idx][actual_c_pressed] = false;
+                                        fader_override_deactivated_for_col = true;
                                     }
                                 }
-                                state_guard.mapping[actual_r_pressed][actual_c_pressed] = true;
-                            }
-                            _state_changed_for_debug = true;
-                            full_refresh_needed = true;
-                        } else { warn!("Calculated actual pressed note out of bounds!"); }
-                    }
-                }
-            } 
-        } else if status & 0xF0 == 0xB0 { // Control Change (Faders)
-            let cc_number = data1;
-            let cc_value = data2;
-            if (48..=55).contains(&cc_number) { // Faders CC 48-55
-                let col_index_on_grid = (cc_number - 48) as usize;
-                let mut state_guard = app_state.lock().unwrap();
-                let current_lfo_bank = state_guard.current_lfo_bank;
-                let current_effect_bank = state_guard.current_effect_bank;
-                let actual_col_idx_fader = current_effect_bank * NUM_COLS + col_index_on_grid;
+                                if fader_override_deactivated_for_col {
+                                    info!("Fader override on actual col {} deactivated by button for all LFO banks.", actual_c_pressed);
+                                }
 
-                if actual_col_idx_fader < TOTAL_COLS {
-                    if !state_guard.fader_override_active[current_lfo_bank][actual_col_idx_fader] {
-                        info!("Fader CC {} taking control of actual col {} for LFO Bank {}", cc_number, actual_col_idx_fader, current_lfo_bank);
+                                if state_guard.mapping[actual_r_pressed][actual_c_pressed] {
+                                    state_guard.mapping[actual_r_pressed][actual_c_pressed] = false;
+                                } else {
+                                    for r_iter_vis in 0..NUM_ROWS {
+                                        let actual_r_iter = current_lfo_bank * NUM_ROWS + r_iter_vis;
+                                        if actual_r_iter != actual_r_pressed && actual_r_iter < TOTAL_ROWS {
+                                            state_guard.mapping[actual_r_iter][actual_c_pressed] = false;
+                                        }
+                                    }
+                                    state_guard.mapping[actual_r_pressed][actual_c_pressed] = true;
+                                }
+                                full_refresh_needed = true;
+                            } else { warn!("Calculated actual pressed note out of bounds!"); }
+                        }
                     }
-                    state_guard.fader_override_active[current_lfo_bank][actual_col_idx_fader] = true;
-                    state_guard.fader_override_value[current_lfo_bank][actual_col_idx_fader] = cc_value as f32 / 127.0;
-                    _state_changed_for_debug = true;
-                    full_refresh_needed = true;
-                } else { warn!("Calculated actual fader column out of bounds!"); }
+                } 
+            } else if status & 0xF0 == 0xB0 { // Control Change (Faders)
+                let cc_number = data1;
+                let cc_value = data2;
+                if (48..=55).contains(&cc_number) { // Faders CC 48-55
+                    let col_index_on_grid = (cc_number - 48) as usize;
+                    let current_lfo_bank = state_guard.current_lfo_bank; // Use from state_guard
+                    let current_effect_bank = state_guard.current_effect_bank;
+                    let actual_col_idx_fader = current_effect_bank * NUM_COLS + col_index_on_grid;
+
+                    if actual_col_idx_fader < TOTAL_COLS {
+                        if !state_guard.fader_override_active[current_lfo_bank][actual_col_idx_fader] {
+                            info!("Fader CC {} taking control of actual col {} for LFO Bank {}", cc_number, actual_col_idx_fader, current_lfo_bank);
+                        }
+                        state_guard.fader_override_active[current_lfo_bank][actual_col_idx_fader] = true;
+                        state_guard.fader_override_value[current_lfo_bank][actual_col_idx_fader] = cc_value as f32 / 127.0;
+                        full_refresh_needed = true;
+                    } else { warn!("Calculated actual fader column out of bounds!"); }
+                }
             }
-        }
+        } // AppState write lock (state_guard) is released here
 
         if bank_led_refresh_needed || full_refresh_needed {
             let mut midi_out_guard = midi_out_conn_arc.lock().unwrap();
-            let locked_app_state_for_led = app_state.lock().unwrap(); 
+            // Re-lock AppState for read-only access needed for LEDs
+            let app_state_for_leds = app_state.lock().unwrap(); 
             if bank_led_refresh_needed {
-                _update_bank_select_leds(&mut midi_out_guard, &locked_app_state_for_led);
+                _update_bank_select_leds(&mut midi_out_guard, &app_state_for_leds);
             }
             if full_refresh_needed {
-                _refresh_grid_leds(&mut midi_out_guard, &locked_app_state_for_led);
+                _refresh_grid_leds(&mut midi_out_guard, &app_state_for_leds);
             }
         }
     }
