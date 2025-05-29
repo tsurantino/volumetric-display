@@ -142,6 +142,36 @@ async fn main() -> Result<(), AppError> { // Use AppError
     Ok(())
 }
 
+fn process_osc_message(msg: OscMessage, app_state: &Arc<Mutex<AppState>>) {
+    if msg.addr.starts_with("/lfo/") {
+        if let Some(row_str) = msg.addr.split('/').last() {
+            if let Ok(lfo_source_on_grid) = row_str.parse::<usize>() {
+                if lfo_source_on_grid >= 1 && lfo_source_on_grid <= NUM_ROWS {
+                    if let Some(OscType::Float(value)) = msg.args.get(0) {
+                        let mut state = app_state.lock().unwrap();
+                        let actual_lfo_row_idx = state.current_lfo_bank * NUM_ROWS + (lfo_source_on_grid -1);
+                        if actual_lfo_row_idx < TOTAL_ROWS {
+                            state.latest_lfo_values[actual_lfo_row_idx] = *value;
+                        } else {
+                            warn!("actual_lfo_row_idx {} out of bounds", actual_lfo_row_idx);
+                        }
+                    } else {
+                        warn!("LFO message did not contain a float argument: {:?}", msg.args);
+                    }
+                } else {
+                    warn!("LFO source on grid out of range: {}", lfo_source_on_grid);
+                }
+            } else {
+                warn!("Could not parse LFO row from address: {}", msg.addr);
+            }
+        }
+    } else if msg.addr == "/_samplerate" {
+        // known message, can ignore if not used
+    } else {
+        warn!("Received unhandled OSC message: {:?}", msg);
+    }
+}
+
 // --- OSC Input Handling ---
 async fn handle_osc_input(app_state: Arc<Mutex<AppState>>, addr: SocketAddr) -> Result<(), AppError> {
     info!("Starting OSC input listener on {}", addr);
@@ -153,32 +183,20 @@ async fn handle_osc_input(app_state: Arc<Mutex<AppState>>, addr: SocketAddr) -> 
             Ok((size, _src_addr)) => { 
                 match decode_udp(&buf[..size]) { 
                     Ok((_remaining_buf, OscPacket::Message(msg))) => {
-                        if msg.addr.starts_with("/lfo/") {
-                            if let Some(row_str) = msg.addr.split('/').last() {
-                                if let Ok(lfo_source_on_grid) = row_str.parse::<usize>() {
-                                    if lfo_source_on_grid >= 1 && lfo_source_on_grid <= NUM_ROWS {
-                                        if let Some(OscType::Float(value)) = msg.args.get(0) {
-                                            let mut state = app_state.lock().unwrap();
-                                            let actual_lfo_row_idx = state.current_lfo_bank * NUM_ROWS + (lfo_source_on_grid -1);
-                                            if actual_lfo_row_idx < TOTAL_ROWS {
-                                                state.latest_lfo_values[actual_lfo_row_idx] = *value;
-                                            } else {
-                                                warn!("actual_lfo_row_idx {} out of bounds", actual_lfo_row_idx);
-                                            }
-                                        } else {
-                                            warn!("LFO message did not contain a float argument: {:?}", msg.args);
-                                        }
-                                    } else {
-                                        warn!("LFO source on grid out of range: {}", lfo_source_on_grid);
-                                    }
-                                } else {
-                                    warn!("Could not parse LFO row from address: {}", msg.addr);
+                        process_osc_message(msg, &app_state);
+                    }
+                    Ok((_remaining_buf, OscPacket::Bundle(bundle))) => {
+                        // warn!("Received OSC Bundle, processing contents...");
+                        for packet in bundle.content {
+                            match packet {
+                                OscPacket::Message(msg) => {
+                                    process_osc_message(msg, &app_state);
+                                }
+                                OscPacket::Bundle(inner_bundle) => {
+                                    warn!("Received nested OSC Bundle, not yet handled: {:?}", inner_bundle);
                                 }
                             }
                         }
-                    }
-                    Ok((_remaining_buf, OscPacket::Bundle(bundle))) => {
-                        warn!("Received OSC Bundle, not yet handled: {:?}", bundle);
                     }
                     Err(e) => {
                         error!("Error decoding OSC packet: {}", e);
@@ -427,40 +445,79 @@ async fn process_midi_messages(app_state: Arc<Mutex<AppState>>, mut midi_rx: mps
 async fn osc_sender_loop(app_state: Arc<Mutex<AppState>>, target_addr: SocketAddr) -> Result<(), AppError> {
     info!("Starting OSC sender loop for {}", target_addr);
     let socket = UdpSocket::bind("0.0.0.0:0").map_err(AppError::from)?;
-    let mut interval = interval(Duration::from_millis(50));
+    let mut interval = interval(Duration::from_millis(16)); // 60 Hz
     let mut osc_sent_values = vec![-1.0f32; TOTAL_COLS];
     loop {
         interval.tick().await;
-        let mut next_osc_values_to_send = osc_sent_values.clone();
-        let state = app_state.lock().unwrap();
-        for actual_col_idx in 0..TOTAL_COLS {
-            let mut found_active_driver_for_col = false;
-            for lfo_bank_idx_for_fader_check in 0..NUM_LFO_BANKS {
-                if state.fader_override_active[lfo_bank_idx_for_fader_check][actual_col_idx] {
-                    next_osc_values_to_send[actual_col_idx] = state.fader_override_value[lfo_bank_idx_for_fader_check][actual_col_idx];
-                    found_active_driver_for_col = true;
-                    break;
+        let mut next_osc_values_to_send = osc_sent_values.clone(); // Start with last known sent values
+        
+        // Determine next values based on current app state
+        {
+            let state = app_state.lock().unwrap();
+            for actual_col_idx in 0..TOTAL_COLS {
+                let mut found_active_driver_for_col = false;
+                // Priority 1: Fader Overrides
+                for lfo_bank_idx_for_fader_check in 0..NUM_LFO_BANKS {
+                    if state.fader_override_active[lfo_bank_idx_for_fader_check][actual_col_idx] {
+                        next_osc_values_to_send[actual_col_idx] = state.fader_override_value[lfo_bank_idx_for_fader_check][actual_col_idx];
+                        found_active_driver_for_col = true;
+                        break;
+                    }
                 }
-            }
-            if found_active_driver_for_col { continue; }
-            for actual_lfo_row_idx in (0..TOTAL_ROWS).rev() {
-                if state.mapping[actual_lfo_row_idx][actual_col_idx] {
-                    next_osc_values_to_send[actual_col_idx] = state.latest_lfo_values[actual_lfo_row_idx];
-                    break;
+                if found_active_driver_for_col { continue; }
+
+                // Priority 2: LFO Mappings (if no fader override)
+                // Iterate from highest actual_lfo_row_idx downwards to give priority
+                for actual_lfo_row_idx in (0..TOTAL_ROWS).rev() {
+                    if state.mapping[actual_lfo_row_idx][actual_col_idx] {
+                        // Check if actual_lfo_row_idx is within bounds for latest_lfo_values
+                        if actual_lfo_row_idx < state.latest_lfo_values.len() {
+                            next_osc_values_to_send[actual_col_idx] = state.latest_lfo_values[actual_lfo_row_idx];
+                        } else {
+                            // This case should ideally not happen if logic is correct elsewhere
+                            // but as a safeguard, we don't change the value if index is out of bounds.
+                            warn!("actual_lfo_row_idx {} out of bounds for latest_lfo_values (len {}) in sender loop", actual_lfo_row_idx, state.latest_lfo_values.len());
+                        }
+                        found_active_driver_for_col = true; // Mark that a driver was found
+                        break; // Found highest-priority mapped LFO for this column
+                    }
                 }
+                // If no driver found (no fader, no LFO mapping), value remains as it was (from osc_sent_values.clone())
             }
-        }
-        drop(state);
+        } // state guard dropped here
+
+        let mut messages_for_bundle: Vec<OscPacket> = Vec::new();
+        let mut indices_updated_in_bundle: Vec<usize> = Vec::new();
+
         for i in 0..TOTAL_COLS {
             if (next_osc_values_to_send[i] - osc_sent_values[i]).abs() > f32::EPSILON {
                 let msg_addr = format!("/effect/{}", i + 1);
                 let msg_args = vec![OscType::Float(next_osc_values_to_send[i])];
-                let packet = OscPacket::Message(OscMessage { addr: msg_addr, args: msg_args });
-                if let Ok(encoded_msg) = encoder::encode(&packet) {
-                    if let Err(e) = socket.send_to(&encoded_msg, target_addr) {
-                        error!("Failed to send OSC message: {}", e);
+                messages_for_bundle.push(OscPacket::Message(OscMessage { addr: msg_addr, args: msg_args }));
+                indices_updated_in_bundle.push(i);
+            }
+        }
+
+        if !messages_for_bundle.is_empty() {
+            let bundle = OscPacket::Bundle(rosc::OscBundle {
+                timetag: rosc::OscTime { seconds: 0, fractional: 1 }, // Represents "immediately"
+                content: messages_for_bundle,
+            });
+            match encoder::encode(&bundle) {
+                Ok(encoded_bundle) => {
+                    if let Err(e) = socket.send_to(&encoded_bundle, target_addr) {
+                        error!("Failed to send OSC bundle: {}", e);
+                    } else {
+                        // If send was successful (or at least, no immediate error),
+                        // update the sent values for the included messages.
+                        for &idx in &indices_updated_in_bundle {
+                            osc_sent_values[idx] = next_osc_values_to_send[idx];
+                        }
+                        // tracing::debug!("Sent OSC bundle with {} messages", indices_updated_in_bundle.len());
                     }
-                    osc_sent_values[i] = next_osc_values_to_send[i];
+                }
+                Err(e) => {
+                    error!("Failed to encode OSC bundle: {}", e);
                 }
             }
         }
