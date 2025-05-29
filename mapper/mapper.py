@@ -31,19 +31,19 @@ class ControlMapper:
     def setup_osc(self):
         self.dispatcher = Dispatcher()
         for row in range(NUM_ROWS):
-            self.dispatcher.map(f"/lfo/{row}", self.handle_lfo, row)
+            self.dispatcher.map(f"/lfo/{row+1}", self.handle_lfo, row)
 
         self.osc_server = ThreadingOSCUDPServer((self.in_host, self.in_port), self.dispatcher)
         threading.Thread(target=self.osc_server.serve_forever, daemon=True).start()
 
-    def handle_lfo(self, unused_addr, args, value):
-        row = args
+    def handle_lfo(self, unused_addr, args, *values):
+        row = args[0]
         for col in range(NUM_COLS):
             if self.mapping[row][col]:
-                self.osc_client.send_message(f"/effect/{col}", value)
-                self.frozen_outputs[col] = value
+                self.osc_client.send_message(f"/effect/{col+1}", values[-1])
+                self.frozen_outputs[col] = values[-1]
             elif not any(self.mapping[r][col] for r in range(NUM_ROWS)):
-                self.osc_client.send_message(f"/effect/{col}", self.frozen_outputs[col])
+                self.osc_client.send_message(f"/effect/{col+1}", self.frozen_outputs[col])
 
     def setup_midi(self):
         self.midi_in = rtmidi.MidiIn()
@@ -139,7 +139,7 @@ if __name__ == "__main__":
     parser.add_argument("--out-port", type=int, default=9001, help="Port to send outgoing OSC messages.")
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+    logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(message)s")
 
     mapper = ControlMapper(args.in_host, args.in_port, args.out_host, args.out_port)
     print("Control mapper running... Press buttons on APC MINI.")
