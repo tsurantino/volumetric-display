@@ -95,24 +95,41 @@ class ControlMapper:
         if message[0] & 0xF0 == 0x90:  # Only react to note-on messages
             if message[2] > 0:  # Check for velocity > 0 (true note-on)
                 note = message[1]
-                for r in range(NUM_ROWS):
-                    for c in range(NUM_COLS):
-                        if NOTE_GRID[r][c] == note:
-                            self.mapping[r][c] = not self.mapping[r][c]
-                            print(f"Mapping {'enabled' if self.mapping[r][c] else 'disabled'} for input {r} -> output {c}")
+                for r_pressed in range(NUM_ROWS):
+                    for c_pressed in range(NUM_COLS):
+                        if NOTE_GRID[r_pressed][c_pressed] == note:
+                            # Found the button that was pressed (r_pressed, c_pressed)
+
+                            if self.mapping[r_pressed][c_pressed]:
+                                # Current mapping is ON, so turn it OFF
+                                self.mapping[r_pressed][c_pressed] = False
+                                print(f"Mapping disabled for input {r_pressed} -> output {c_pressed}")
+                                if self.midi_out:
+                                    led_note = NOTE_GRID[r_pressed][c_pressed]
+                                    self.midi_out.send_message([0x90, led_note, 0]) # LED OFF
+                                    logging.debug(f"Sent LED OFF for [{r_pressed}][{c_pressed}]")
+                            else:
+                                # Current mapping is OFF, so turn it ON.
+                                # First, turn off any other mapping in the same column.
+                                for i in range(NUM_ROWS):
+                                    if i != r_pressed and self.mapping[i][c_pressed]:
+                                        self.mapping[i][c_pressed] = False
+                                        print(f"Mapping disabled for input {i} -> output {c_pressed} (overridden by input {r_pressed})")
+                                        if self.midi_out:
+                                            old_led_note = NOTE_GRID[i][c_pressed]
+                                            self.midi_out.send_message([0x90, old_led_note, 0]) # LED OFF
+                                            logging.debug(f"Sent LED OFF for overridden mapping [{i}][{c_pressed}]")
+                                
+                                # Now, turn ON the new mapping
+                                self.mapping[r_pressed][c_pressed] = True
+                                print(f"Mapping enabled for input {r_pressed} -> output {c_pressed}")
+                                if self.midi_out:
+                                    new_led_note = NOTE_GRID[r_pressed][c_pressed]
+                                    # Using velocity 1 for green LED as before
+                                    self.midi_out.send_message([0x90, new_led_note, 1]) # LED ON
+                                    logging.debug(f"Sent LED ON for [{r_pressed}][{c_pressed}]")
                             
-                            # Update LED feedback
-                            if self.midi_out:
-                                led_note = NOTE_GRID[r][c]
-                                # Velocity 1 (or other low values) for dim, 127 for bright, 0 for off.
-                                # APC MINI LEDs: 0=off, 1=green, 2=green blink, 3=red, 4=red blink, 5=yellow, 6=yellow blink
-                                # For simple on/off, we can use a standard bright color or just 0 for off.
-                                # Let's use velocity 1 for a green LED when enabled.
-                                led_velocity = 1 if self.mapping[r][c] else 0 
-                                self.midi_out.send_message([0x90, led_note, led_velocity])
-                                logging.debug(f"Sent LED command: Note {led_note}, Velocity {led_velocity} for mapping [{r}][{c}] -> {self.mapping[r][c]}")
-                            break # Found the note, no need to check further
-                return # Processed note-on
+                            return # Processed note-on, exit loops and function
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="OSC Control Mapper for APC MINI.")
