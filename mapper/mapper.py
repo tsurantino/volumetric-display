@@ -5,6 +5,7 @@ from pythonosc.osc_server import ThreadingOSCUDPServer
 from pythonosc.udp_client import SimpleUDPClient
 import rtmidi
 import threading
+import queue # Added for MIDI event queue
 
 NUM_ROWS = 8
 NUM_COLS = 8
@@ -37,6 +38,7 @@ class ControlMapper:
         # Fader override state is now per LFO bank and per actual effect column
         self.fader_override_active = [[False] * TOTAL_COLS for _ in range(NUM_LFO_BANKS)]
         self.fader_override_value = [[0.0] * TOTAL_COLS for _ in range(NUM_LFO_BANKS)]
+        self.is_col_mapped_by_any_lfo = [False] * TOTAL_COLS # New: For OSC performance
 
         self.in_host = in_host
         self.in_port = in_port
@@ -44,8 +46,15 @@ class ControlMapper:
         self.out_port = out_port
         self.osc_client = SimpleUDPClient(self.out_host, self.out_port)
 
+        self.midi_event_queue = queue.Queue(maxsize=1) # Set maxsize to 1
+
         self.setup_osc()
         self.setup_midi()
+
+        # Start the MIDI event processing thread
+        self.midi_processing_thread = threading.Thread(target=self._process_midi_events, daemon=True)
+        self.midi_processing_thread.start()
+        logging.info("MIDI event processing thread started.")
 
     def setup_osc(self):
         self.dispatcher = Dispatcher()
@@ -93,6 +102,11 @@ class ControlMapper:
                 self.midi_out.send_message([0x90, led_note, led_velocity])
                 #logging.debug(f"Grid LED [{r_vis}][{c_vis}] (Actual [{actual_r}][{actual_c}], Note {led_note}) set to Vel {led_velocity}")
 
+    def _update_is_col_mapped_status(self, actual_col_idx):
+        # Called when a mapping in actual_col_idx might have changed.
+        self.is_col_mapped_by_any_lfo[actual_col_idx] = any(self.mapping[r][actual_col_idx] for r in range(TOTAL_ROWS))
+        #logging.debug(f"Updated is_col_mapped_by_any_lfo[{actual_col_idx}] to {self.is_col_mapped_by_any_lfo[actual_col_idx]}")
+
     def handle_lfo(self, unused_addr, args, *values):
         #logging.debug(f"Received OSC message: Address: {unused_addr}, Args: {args}, Values: {values}")
         lfo_source_on_grid = args[0] # This is 0-7, relative to current LFO bank
@@ -100,25 +114,23 @@ class ControlMapper:
         value = values[-1] 
 
         for actual_col_idx in range(TOTAL_COLS):
-            # Check if fader override is active for the CURRENT LFO BANK and this actual effect column
             if self.fader_override_active[self.current_lfo_bank][actual_col_idx]:
                 current_fader_val = self.fader_override_value[self.current_lfo_bank][actual_col_idx]
                 self.osc_client.send_message(f"/effect/{actual_col_idx + 1}", current_fader_val)
                 self.frozen_outputs[actual_col_idx] = current_fader_val
             
-            else: # No fader override for the current LFO bank for this actual_col_idx
-                if self.mapping[actual_lfo_row_idx][actual_col_idx]: 
-                    # The currently updating LFO IS mapped to this actual_col_idx
-                    self.osc_client.send_message(f"/effect/{actual_col_idx + 1}", value)
-                    self.frozen_outputs[actual_col_idx] = value
-                
-                # If the currently updating LFO is NOT mapped to this actual_col_idx,
-                # AND no OTHER LFO is mapped to this actual_col_idx either,
-                # then send the frozen value for this column.
-                # This ensures unmapped/un-overridden channels continue to send their last known good value.
-                elif not any(self.mapping[any_lfo_row][actual_col_idx] for any_lfo_row in range(TOTAL_ROWS)):
-                    self.osc_client.send_message(f"/effect/{actual_col_idx + 1}", self.frozen_outputs[actual_col_idx])
-                # If some other LFO is mapped (and not the current one), that LFO's update will handle sending its value.
+            elif self.mapping[actual_lfo_row_idx][actual_col_idx]: 
+                self.osc_client.send_message(f"/effect/{actual_col_idx + 1}", value)
+                self.frozen_outputs[actual_col_idx] = value
+            
+            elif not self.is_col_mapped_by_any_lfo[actual_col_idx]:
+                # This column is not fader-overridden (for current LFO bank),
+                # the current LFO is not mapped to it,
+                # AND no other LFO (from any bank) is mapped to it.
+                # So, send the frozen value.
+                self.osc_client.send_message(f"/effect/{actual_col_idx + 1}", self.frozen_outputs[actual_col_idx])
+            # Else: some other LFO is mapped to this column, or fader override from another LFO bank is active.
+            # The other LFO's update or the fader handling for that bank will manage OSC messages.
 
     def setup_midi(self):
         self.midi_in = rtmidi.MidiIn()
@@ -164,114 +176,153 @@ class ControlMapper:
             self._refresh_grid_leds()
             logging.info("Set initial active bank and grid LED states.")
 
+    # This is the direct callback from rtmidi - keep it very light!
     def handle_midi(self, message_data, _):
-        message, _ = message_data
-        # message[0] = status byte
-        # message[1] = note number or CC number
-        # message[2] = velocity or CC value
+        if message_data and isinstance(message_data[0], (list, tuple)):
+            try:
+                # Try to put the new message, but don't block if the queue (size 1) is full.
+                # This effectively drops older messages if a new one arrives before processing.
+                self.midi_event_queue.put(message_data[0], block=False)
+            except queue.Full:
+                #logging.debug("MIDI queue full, dropping incoming message to prioritize freshness.")
+                # If the queue is full, it means the single slot is occupied by a message
+                # that hasn't been processed yet. We can try to replace it.
+                try:
+                    self.midi_event_queue.get_nowait() # Empty the queue
+                except queue.Empty:
+                    pass # Should not happen if queue.Full was just raised, but good for safety
+                try:
+                    self.midi_event_queue.put_nowait(message_data[0]) # Put the newest message
+                    #logging.debug("Replaced old MIDI message with new one for freshness.")
+                except queue.Full:
+                    # This should ideally not happen if we just emptied it, but as a fallback.
+                    #logging.warning("Failed to replace MIDI message after queue.Full, still dropping.")
+                    pass 
+        else:
+            logging.warning(f"Received unexpected MIDI data format: {message_data}")
 
-        if message[0] & 0xF0 == 0x90:  # Note-on message (buttons)
-            note = message[1]
-            velocity = message[2]
+    def _process_midi_events(self):
+        while True:
+            try:
+                message = self.midi_event_queue.get() # Blocks until an item is available
+                if not message: # Should not happen with default Queue, but good practice
+                    continue
 
-            if velocity > 0: # True note-on
-                # Bank Selection Buttons (Notes 82-89)
-                if 82 <= note <= 85: # LFO Bank Select
-                    new_lfo_bank = note - 82
-                    if new_lfo_bank != self.current_lfo_bank:
-                        self.current_lfo_bank = new_lfo_bank
-                        logging.info(f"Switched to LFO Bank {self.current_lfo_bank}")
-                        self._update_bank_select_leds()
-                        self._refresh_grid_leds()
-                    return # Processed bank select
+                # ---- Start of logic moved from the old handle_midi ----
+                # message[0] = status byte
+                # message[1] = note number or CC number
+                # message[2] = velocity or CC value
 
-                elif 86 <= note <= 89: # Effect Bank Select
-                    new_effect_bank = note - 86
-                    if new_effect_bank != self.current_effect_bank:
-                        self.current_effect_bank = new_effect_bank
-                        logging.info(f"Switched to Effect Bank {self.current_effect_bank}")
-                        self._update_bank_select_leds()
-                        self._refresh_grid_leds()
-                    return # Processed bank select
+                if message[0] & 0xF0 == 0x90:  # Note-on message (buttons)
+                    note = message[1]
+                    velocity = message[2]
 
-                # Grid Buttons
-                for r_pressed_vis in range(NUM_ROWS): # Visible row on 8x8 grid
-                    for c_pressed_vis in range(NUM_COLS): # Visible col on 8x8 grid
-                        if NOTE_GRID[r_pressed_vis][c_pressed_vis] == note:
-                            actual_r_pressed = self.current_lfo_bank * NUM_ROWS + r_pressed_vis
-                            actual_c_pressed = self.current_effect_bank * NUM_COLS + c_pressed_vis
-                            
-                            #logging.debug(f"Button press: Vis ({r_pressed_vis},{c_pressed_vis}), Actual ({actual_r_pressed},{actual_c_pressed}), Note {note}")
+                    if velocity > 0: # True note-on
+                        # Bank Selection Buttons (Notes 82-89)
+                        if 82 <= note <= 85: # LFO Bank Select
+                            new_lfo_bank = note - 82
+                            if new_lfo_bank != self.current_lfo_bank:
+                                self.current_lfo_bank = new_lfo_bank
+                                logging.info(f"Switched to LFO Bank {self.current_lfo_bank}")
+                                self._update_bank_select_leds()
+                                self._refresh_grid_leds()
+                            # No return here, let queue processing continue if needed
 
-                            # Check fader override for the current LFO bank and this actual column
-                            if self.fader_override_active[self.current_lfo_bank][actual_c_pressed]:
-                                self.fader_override_active[self.current_lfo_bank][actual_c_pressed] = False # Clear for current LFO bank
-                                #logging.info(f"Fader override on actual col {actual_c_pressed} cleared for LFO Bank {self.current_lfo_bank} by button. Restoring LFO control.")
+                        elif 86 <= note <= 89: # Effect Bank Select
+                            new_effect_bank = note - 86
+                            if new_effect_bank != self.current_effect_bank:
+                                self.current_effect_bank = new_effect_bank
+                                logging.info(f"Switched to Effect Bank {self.current_effect_bank}")
+                                self._update_bank_select_leds()
+                                self._refresh_grid_leds()
+                            # No return here
 
-                                if self.midi_out:
-                                    for r_iter_vis in range(NUM_ROWS):
-                                        actual_r_iter = self.current_lfo_bank * NUM_ROWS + r_iter_vis
-                                        self.mapping[actual_r_iter][actual_c_pressed] = False
-                                        if r_iter_vis != r_pressed_vis: # Turn off other LEDs in this visible column
-                                             self.midi_out.send_message([0x90, NOTE_GRID[r_iter_vis][c_pressed_vis], LED_OFF])
-                                
-                                self.mapping[actual_r_pressed][actual_c_pressed] = True
-                                #print(f"Mapping enabled for LFO input {actual_r_pressed} -> output {actual_c_pressed} (fader override removed).")
-                                if self.midi_out:
-                                    self.midi_out.send_message([0x90, NOTE_GRID[r_pressed_vis][c_pressed_vis], LED_GREEN])
-                            
-                            else: # Fader override IS NOT Active (Normal button operation for this actual column)
-                                if self.mapping[actual_r_pressed][actual_c_pressed]:
-                                    self.mapping[actual_r_pressed][actual_c_pressed] = False
-                                    #print(f"Mapping disabled for LFO {actual_r_pressed} -> Effect {actual_c_pressed}")
-                                    if self.midi_out:
-                                        self.midi_out.send_message([0x90, NOTE_GRID[r_pressed_vis][c_pressed_vis], LED_OFF])
-                                else:
-                                    # Turn off any other LFO mapping in the *current LFO bank* to this *actual effect column*.
-                                    if self.midi_out:
-                                        for r_iter_vis in range(NUM_ROWS):
-                                            actual_r_iter = self.current_lfo_bank * NUM_ROWS + r_iter_vis
-                                            if actual_r_iter != actual_r_pressed and self.mapping[actual_r_iter][actual_c_pressed]:
-                                                self.mapping[actual_r_iter][actual_c_pressed] = False
-                                                self.midi_out.send_message([0x90, NOTE_GRID[r_iter_vis][c_pressed_vis], LED_OFF])
-                                    
-                                    self.mapping[actual_r_pressed][actual_c_pressed] = True
-                                    #print(f"Mapping enabled for LFO {actual_r_pressed} -> Effect {actual_c_pressed}")
-                                    if self.midi_out:
-                                        self.midi_out.send_message([0x90, NOTE_GRID[r_pressed_vis][c_pressed_vis], LED_GREEN])
-                            
-                            self._refresh_grid_leds() # Refresh to ensure all states are correct after a change. More robust.
-                            return 
-                return 
+                        else: # Grid Buttons (if not a bank select button)
+                            for r_pressed_vis in range(NUM_ROWS): 
+                                for c_pressed_vis in range(NUM_COLS): 
+                                    if NOTE_GRID[r_pressed_vis][c_pressed_vis] == note:
+                                        actual_r_pressed = self.current_lfo_bank * NUM_ROWS + r_pressed_vis
+                                        actual_c_pressed = self.current_effect_bank * NUM_COLS + c_pressed_vis
+                                        
+                                        if self.fader_override_active[self.current_lfo_bank][actual_c_pressed]:
+                                            self.fader_override_active[self.current_lfo_bank][actual_c_pressed] = False
+                                            if self.midi_out:
+                                                for r_iter_vis in range(NUM_ROWS):
+                                                    actual_r_iter = self.current_lfo_bank * NUM_ROWS + r_iter_vis
+                                                    self.mapping[actual_r_iter][actual_c_pressed] = False
+                                                    if r_iter_vis != r_pressed_vis: 
+                                                         self.midi_out.send_message([0x90, NOTE_GRID[r_iter_vis][c_pressed_vis], LED_OFF])
+                                            
+                                            self.mapping[actual_r_pressed][actual_c_pressed] = True
+                                            self._update_is_col_mapped_status(actual_c_pressed)
+                                            if self.midi_out:
+                                                self.midi_out.send_message([0x90, NOTE_GRID[r_pressed_vis][c_pressed_vis], LED_GREEN])
+                                        
+                                        else: 
+                                            if self.mapping[actual_r_pressed][actual_c_pressed]:
+                                                self.mapping[actual_r_pressed][actual_c_pressed] = False
+                                                self._update_is_col_mapped_status(actual_c_pressed)
+                                                if self.midi_out:
+                                                    self.midi_out.send_message([0x90, NOTE_GRID[r_pressed_vis][c_pressed_vis], LED_OFF])
+                                            else:
+                                                if self.midi_out:
+                                                    for r_iter_vis in range(NUM_ROWS):
+                                                        actual_r_iter = self.current_lfo_bank * NUM_ROWS + r_iter_vis
+                                                        if actual_r_iter != actual_r_pressed and self.mapping[actual_r_iter][actual_c_pressed]:
+                                                            self.mapping[actual_r_iter][actual_c_pressed] = False
+                                                            self.midi_out.send_message([0x90, NOTE_GRID[r_iter_vis][c_pressed_vis], LED_OFF])
+                                                
+                                                self.mapping[actual_r_pressed][actual_c_pressed] = True
+                                                self._update_is_col_mapped_status(actual_c_pressed)
+                                                if self.midi_out:
+                                                    self.midi_out.send_message([0x90, NOTE_GRID[r_pressed_vis][c_pressed_vis], LED_GREEN])
+                                        
+                                        self._refresh_grid_leds() 
+                                        # Break out of inner loops once button processed
+                                        break 
+                                else: # Inner loop (c_pressed_vis) continued without break
+                                    continue
+                                break # Outer loop (r_pressed_vis) broke
+                # No return here for note-on, allow other types of messages to be processed if they were queued rapidly
 
-        elif message[0] & 0xF0 == 0xB0:  # Control Change message (Faders)
-            cc_number = message[1]
-            cc_value = message[2]
+                elif message[0] & 0xF0 == 0xB0:  # Control Change message (Faders)
+                    cc_number = message[1]
+                    cc_value = message[2]
 
-            # APC MINI Faders (Channels 1-8 on the device, map to CC 48-55)
-            if 48 <= cc_number <= 55:
-                col_index_on_grid = cc_number - 48  # Visible column index 0-7
-                actual_col_idx_fader = self.current_effect_bank * NUM_COLS + col_index_on_grid
+                    if 48 <= cc_number <= 55:
+                        col_index_on_grid = cc_number - 48  
+                        actual_col_idx_fader = self.current_effect_bank * NUM_COLS + col_index_on_grid
+                        
+                        if not self.fader_override_active[self.current_lfo_bank][actual_col_idx_fader]:
+                            logging.info(f"Fader CC {cc_number} taking control of actual output column {actual_col_idx_fader} for LFO Bank {self.current_lfo_bank}.")                
+                        
+                        self.fader_override_active[self.current_lfo_bank][actual_col_idx_fader] = True
+                        fader_float_value = cc_value / 127.0
+                        self.fader_override_value[self.current_lfo_bank][actual_col_idx_fader] = fader_float_value 
+
+                        self.osc_client.send_message(f"/effect/{actual_col_idx_fader + 1}", fader_float_value)
+
+                        if self.midi_out:
+                            for r_vis_idx in range(NUM_ROWS): 
+                                actual_r_loop = self.current_lfo_bank * NUM_ROWS + r_vis_idx 
+                                if self.mapping[actual_r_loop][actual_col_idx_fader]: 
+                                    led_note_vis = NOTE_GRID[r_vis_idx][col_index_on_grid]
+                                    self.midi_out.send_message([0x90, led_note_vis, LED_RED]) 
+                    # No return here for CC
+                # ---- End of logic moved from the old handle_midi ----
                 
-                # Fader override is now specific to the current LFO bank
-                if not self.fader_override_active[self.current_lfo_bank][actual_col_idx_fader]:
-                    logging.info(f"Fader CC {cc_number} taking control of actual output column {actual_col_idx_fader} for LFO Bank {self.current_lfo_bank}.")                
-                
-                self.fader_override_active[self.current_lfo_bank][actual_col_idx_fader] = True
-                fader_float_value = cc_value / 127.0
-                self.fader_override_value[self.current_lfo_bank][actual_col_idx_fader] = fader_float_value 
+                self.midi_event_queue.task_done() # Signal that the item from the queue is processed
 
-                self.osc_client.send_message(f"/effect/{actual_col_idx_fader + 1}", fader_float_value)
-                #logging.debug(f"Fader override OSC sent for actual col {actual_col_idx_fader}: CC {cc_number} val {fader_float_value}")
-
-                if self.midi_out:
-                    for r_vis_idx in range(NUM_ROWS): # Iterate visible rows
-                        actual_r_loop = self.current_lfo_bank * NUM_ROWS + r_vis_idx # LFOs in current LFO bank
-                        if self.mapping[actual_r_loop][actual_col_idx_fader]: 
-                            led_note_vis = NOTE_GRID[r_vis_idx][col_index_on_grid]
-                            self.midi_out.send_message([0x90, led_note_vis, LED_RED]) 
-                            #logging.debug(f"Fader override: LED for LFO mapping Actual [{actual_r_loop}][{actual_col_idx_fader}] (Vis Note {led_note_vis}) set to RED")
-            return # Processed CC message
+            except queue.Empty:
+                # This shouldn't be strictly necessary with a blocking get(), 
+                # but can be a part of very robust loop structures.
+                # For now, we expect get() to block.
+                pass 
+            except Exception as e:
+                logging.error(f"Error processing MIDI event: {e}", exc_info=True)
+                # Optionally, re-raise or handle more gracefully depending on desired robustness.
+                # If an error occurs, ensure task_done is called if an item was pulled.
+                # However, with current structure, if get() succeeds, task_done() should be reached.
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="OSC Control Mapper for APC MINI.")
