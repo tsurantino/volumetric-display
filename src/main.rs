@@ -650,33 +650,44 @@ async fn osc_sender_loop(app_state: Arc<AppState>, target_addr: SocketAddr) -> R
             let fader_override_active_guard = app_state.fader_override_active.read().unwrap();
             let fader_override_value_guard = app_state.fader_override_value.read().unwrap();
             let latest_lfo_values_guard = app_state.latest_lfo_values.read().unwrap();
-            // current_lfo_bank & current_effect_bank are not directly used by the sender logic 
-            // as it iterates over TOTAL_ROWS and TOTAL_COLS.
+            // Read current LFO bank for context-sensitive LFO mapping search
+            let active_lfo_bank = app_state.banks.current_lfo_bank.load(Ordering::SeqCst);
 
-            for actual_col_idx in 0..TOTAL_COLS {
+            for actual_col_idx_effect in 0..TOTAL_COLS { 
                 let mut found_active_driver_for_col = false;
                 
                 for lfo_bank_idx_for_fader_check in 0..NUM_LFO_BANKS {
-                    if fader_override_active_guard[lfo_bank_idx_for_fader_check][actual_col_idx] {
-                        next_osc_values_to_send[actual_col_idx] = fader_override_value_guard[lfo_bank_idx_for_fader_check][actual_col_idx];
+                    if fader_override_active_guard[lfo_bank_idx_for_fader_check][actual_col_idx_effect] {
+                        next_osc_values_to_send[actual_col_idx_effect] = fader_override_value_guard[lfo_bank_idx_for_fader_check][actual_col_idx_effect];
                         found_active_driver_for_col = true;
                         break;
                     }
                 }
                 if found_active_driver_for_col { continue; }
 
-                for actual_lfo_row_idx in (0..TOTAL_ROWS).rev() {
-                    if mapping_guard[actual_lfo_row_idx][actual_col_idx] {
-                        if actual_lfo_row_idx < latest_lfo_values_guard.len() {
-                            let lfo_val = latest_lfo_values_guard[actual_lfo_row_idx];
-                            next_osc_values_to_send[actual_col_idx] = lfo_val;
-                            //debug!("OSC_SENDER: Effect {} driven by LFO {} (Value: {:.4})", actual_col_idx + 1, actual_lfo_row_idx + 1, lfo_val);
-                            found_active_driver_for_col = true; 
-                        } else {
-                            warn!("actual_lfo_row_idx {} out of bounds for latest_lfo_values (len {}) in sender loop. LFO for Effect {} not applied.", 
-                            actual_lfo_row_idx, latest_lfo_values_guard.len(), actual_col_idx + 1);
+                // PRIORITY 2: LFO Mappings (if no fader override for this actual_col_idx_effect)
+                // Search LFOs only within the currently active LFO bank.
+                // Iterate visual LFO rows (0 to NUM_ROWS-1) in the active bank, from highest visual row to lowest.
+                for visual_row_idx_lfo in (0..NUM_ROWS).rev() { 
+                    let actual_row_idx_lfo = active_lfo_bank * NUM_ROWS + visual_row_idx_lfo;
+                    
+                    if actual_row_idx_lfo < TOTAL_ROWS { // Ensure global LFO index is within bounds of mapping array
+                        if mapping_guard[actual_row_idx_lfo][actual_col_idx_effect] { 
+                            if actual_row_idx_lfo < latest_lfo_values_guard.len() {
+                                let lfo_val = latest_lfo_values_guard[actual_row_idx_lfo];
+                                next_osc_values_to_send[actual_col_idx_effect] = lfo_val;
+                                debug!("OSC_SENDER (Bank {}): Effect {} driven by LFO {} (Visual Row in Bank) which is Global LFO Idx {}, Value: {:.4}", 
+                                    active_lfo_bank, actual_col_idx_effect + 1, visual_row_idx_lfo + 1, actual_row_idx_lfo, lfo_val);
+                                found_active_driver_for_col = true; 
+                            } else {
+                                warn!("OSC_SENDER: actual_row_idx_lfo {} out of bounds for latest_lfo_values (len {}). LFO for Effect {} not applied.", 
+                                actual_row_idx_lfo, latest_lfo_values_guard.len(), actual_col_idx_effect + 1);
+                            }
+                            break; 
                         }
-                        break; 
+                    } else {
+                        // This case should ideally not be reached if NUM_ROWS and active_lfo_bank are correct.
+                        warn!("OSC_SENDER: Calculated actual_row_idx_lfo {} is out of TOTAL_ROWS {} bounds.", actual_row_idx_lfo, TOTAL_ROWS);
                     }
                 }
             }
