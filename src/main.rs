@@ -64,11 +64,13 @@ impl LedState {
         if r_vis < NUM_ROWS && c_vis < NUM_COLS { // Bounds check for safety
             let note = NOTE_GRID[r_vis][c_vis];
             if self.grid[r_vis][c_vis] != desired_velocity {
-                // debug!("Grid LED state change: Note {}, Visible [{},{}], From {}, To {}", note, r_vis, c_vis, self.grid[r_vis][c_vis], desired_velocity);
+                debug!("GRID LED CHANGE: Note {}, Vis ({},{}), From {}, To {}", note, r_vis, c_vis, self.grid[r_vis][c_vis], desired_velocity);
                 if let Err(e) = conn.send(&[0x90, note, desired_velocity]) {
                     warn!("Failed to send MIDI note {} (grid): {}", note, e);
                 }
                 self.grid[r_vis][c_vis] = desired_velocity;
+            } else {
+                // debug!("Grid LED no change: Note {}, Vis ({},{}), Vel {}", note, r_vis, c_vis, desired_velocity);
             }
         } else {
             warn!("Attempted to send grid note out of bounds: r_vis={}, c_vis={}", r_vis, c_vis);
@@ -81,11 +83,13 @@ impl LedState {
         if bank_idx < NUM_LFO_BANKS { // Bounds check
             let note = (82 + bank_idx) as u8;
             if self.lfo_banks[bank_idx] != desired_velocity {
-                // debug!("LFO Bank LED state change: Note {}, Bank Idx {}, From {}, To {}", note, bank_idx, self.lfo_banks[bank_idx], desired_velocity);
+                debug!("LFO BANK LED CHANGE: Note {}, Bank Idx {}, From {}, To {}", note, bank_idx, self.lfo_banks[bank_idx], desired_velocity);
                 if let Err(e) = conn.send(&[0x90, note, desired_velocity]) {
                     warn!("Failed to send MIDI note {} (LFO bank): {}", note, e);
                 }
                 self.lfo_banks[bank_idx] = desired_velocity;
+            } else {
+                // debug!("LFO Bank LED no change: Note {}, Bank Idx {}, Vel {}", note, bank_idx, desired_velocity);
             }
         } else {
             warn!("Attempted to send LFO bank note out of bounds: bank_idx={}", bank_idx);
@@ -98,11 +102,13 @@ impl LedState {
         if bank_idx < NUM_EFFECT_BANKS { // Bounds check
             let note = (86 + bank_idx) as u8;
             if self.effect_banks[bank_idx] != desired_velocity {
-                // debug!("Effect Bank LED state change: Note {}, Bank Idx {}, From {}, To {}", note, bank_idx, self.effect_banks[bank_idx], desired_velocity);
+                debug!("EFFECT BANK LED CHANGE: Note {}, Bank Idx {}, From {}, To {}", note, bank_idx, self.effect_banks[bank_idx], desired_velocity);
                 if let Err(e) = conn.send(&[0x90, note, desired_velocity]) {
                     warn!("Failed to send MIDI note {} (Effect bank): {}", note, e);
                 }
                 self.effect_banks[bank_idx] = desired_velocity;
+            } else {
+                // debug!("Effect Bank LED no change: Note {}, Bank Idx {}, Vel {}", note, bank_idx, desired_velocity);
             }
         } else {
              warn!("Attempted to send Effect bank note out of bounds: bank_idx={}", bank_idx);
@@ -134,9 +140,8 @@ struct AppStateBanks {
 #[derive(Debug)]
 enum LedUpdateRequest {
     FullRefresh,
-    BankOnlyRefresh,
     BothRefresh, 
-    FaderColumnRefresh { visual_fader_col_idx: usize },
+    FaderColumnRefresh { actual_effect_idx: usize },
 }
 
 struct AppState {
@@ -249,13 +254,14 @@ fn process_osc_message(msg: OscMessage, app_state: &Arc<AppState>) {
     if msg.addr.starts_with("/lfo/") {
         if let Some(row_str) = msg.addr.split('/').last() {
             if let Ok(lfo_source_on_grid) = row_str.parse::<usize>() {
-                if lfo_source_on_grid >= 1 && lfo_source_on_grid <= NUM_COLS {
+                // LFOs are by row, so lfo_source_on_grid (1-8) corresponds to a row.
+                if lfo_source_on_grid >= 1 && lfo_source_on_grid <= NUM_ROWS { // Check against NUM_ROWS
                     if let Some(OscType::Float(value)) = msg.args.get(0) {
                         let current_lfo_bank = app_state.banks.current_lfo_bank.load(Ordering::SeqCst);
-                        let actual_lfo_idx = current_lfo_bank * NUM_COLS + (lfo_source_on_grid - 1);
+                        let actual_lfo_idx = current_lfo_bank * NUM_ROWS + (lfo_source_on_grid - 1); // Use NUM_ROWS for LFO from row
                         
                         let mut latest_lfo_values_guard = app_state.latest_lfo_values.write().unwrap();
-                        if actual_lfo_idx < latest_lfo_values_guard.len() {
+                        if actual_lfo_idx < latest_lfo_values_guard.len() { 
                             latest_lfo_values_guard[actual_lfo_idx] = *value;
                         } else {
                             warn!("actual_lfo_idx {} out of bounds for latest_lfo_values (len {}). OSC lfo_source_on_grid: {}", actual_lfo_idx, latest_lfo_values_guard.len(), lfo_source_on_grid);
@@ -413,24 +419,24 @@ fn _update_bank_select_leds(midi_out_conn: &mut MidiOutputConnection, app_state:
 fn _refresh_grid_leds(midi_out_conn: &mut MidiOutputConnection, app_state: &Arc<AppState>, led_state: &mut LedState) {
     let current_lfo_bank = app_state.banks.current_lfo_bank.load(Ordering::SeqCst);
     let current_effect_bank = app_state.banks.current_effect_bank.load(Ordering::SeqCst);
+    debug!("Refreshing grid LEDs. LFO Bank: {}, Effect Bank: {}", current_lfo_bank, current_effect_bank);
     let mapping_guard = app_state.mapping.read().unwrap();
     let fader_override_active_guard = app_state.fader_override_active.read().unwrap();
 
-    for r_vis in 0..NUM_ROWS { // Visual rows on APC
-        for c_vis in 0..NUM_COLS { // Visual columns on APC
-            // New indexing: LFO from visual column, Effect from visual row
-            let actual_r_lfo_idx = current_lfo_bank * NUM_COLS + c_vis; // LFO index from visual column c_vis
-            let actual_c_effect_idx = current_effect_bank * NUM_ROWS + r_vis; // Effect index from visual row r_vis
+    for r_vis in 0..NUM_ROWS { // Visual rows on APC (LFOs)
+        for c_vis in 0..NUM_COLS { // Visual columns on APC (Effects)
+            let actual_r_lfo_idx = current_lfo_bank * NUM_ROWS + r_vis; 
+            let actual_c_effect_idx = current_effect_bank * NUM_COLS + c_vis; 
             
             let mut led_velocity = LED_OFF;
 
-            // Check bounds against TOTAL_ROWS for LFOs, TOTAL_COLS for Effects
             if actual_r_lfo_idx < TOTAL_ROWS && actual_c_effect_idx < TOTAL_COLS { 
-                // Fader override is fader_override_active[LFO_Bank][Effect_Index]
-                // Here, LFO_Bank is current_lfo_bank. Effect_Index is actual_c_effect_idx.
                 let is_fader_override = fader_override_active_guard[current_lfo_bank][actual_c_effect_idx];
-                // Mapping is mapping[LFO_Index][Effect_Index]
                 let is_mapped = mapping_guard[actual_r_lfo_idx][actual_c_effect_idx];
+                if r_vis == 0 { // Log for top row only to reduce spam
+                    // debug!("LED Refresh (r_vis={}, c_vis={}): LFO_idx={}, Effect_idx={}, Mapped={}, Override={}",
+                    //    r_vis, c_vis, actual_r_lfo_idx, actual_c_effect_idx, is_mapped, is_fader_override);
+                }
 
                 if is_fader_override && is_mapped {
                     led_velocity = LED_RED;
@@ -488,33 +494,40 @@ async fn process_midi_messages(app_state: Arc<AppState>, mut midi_rx: mpsc::Rece
                         let current_lfo_bank = app_state.banks.current_lfo_bank.load(Ordering::SeqCst);
                         let current_effect_bank = app_state.banks.current_effect_bank.load(Ordering::SeqCst);
                         
-                        let actual_r_pressed = current_lfo_bank * NUM_COLS + c_pv;
-                        let actual_c_pressed = current_effect_bank * NUM_ROWS + r_pv;
+                        // --- REVERTING TO: LFO from visual Row, Effect from visual Column ---
+                        let actual_r_lfo_idx = current_lfo_bank * NUM_ROWS + r_pv;    // LFO index from visual row r_pv
+                        let actual_c_effect_idx = current_effect_bank * NUM_COLS + c_pv; // Effect index from visual column c_pv
+                        // --- END REVERT ---
 
-                        if actual_c_pressed < TOTAL_COLS && actual_r_pressed < TOTAL_ROWS {
+                        if actual_c_effect_idx < TOTAL_COLS && actual_r_lfo_idx < TOTAL_ROWS { // Bounds check with new var names
                             let mut mapping_guard = app_state.mapping.write().unwrap(); 
                             let mut fader_override_active_guard = app_state.fader_override_active.write().unwrap();
                             
                             // When a grid button is pressed, deactivate fader override for that column ONLY in the context of the CURRENT LFO bank.
-                            if fader_override_active_guard[current_lfo_bank][actual_c_pressed] {
-                                fader_override_active_guard[current_lfo_bank][actual_c_pressed] = false;
-                                info!("Fader override on actual col {} for LFO bank {} deactivated by button press.", actual_c_pressed, current_lfo_bank);
+                            if fader_override_active_guard[current_lfo_bank][actual_c_effect_idx] {
+                                fader_override_active_guard[current_lfo_bank][actual_c_effect_idx] = false;
+                                info!("Fader override on actual col {} for LFO bank {} deactivated by button press.", actual_c_effect_idx, current_lfo_bank);
                             }
 
-                            if mapping_guard[actual_r_pressed][actual_c_pressed] {
-                                mapping_guard[actual_r_pressed][actual_c_pressed] = false;
+                            if mapping_guard[actual_r_lfo_idx][actual_c_effect_idx] {
+                                mapping_guard[actual_r_lfo_idx][actual_c_effect_idx] = false;
+                                debug!("Toggled OFF mapping: LFO {} to Effect {}", actual_r_lfo_idx, actual_c_effect_idx);
                             } else {
-                                // Unmap other LFOs (from different visual columns in the same LFO bank)
-                                // from this specific Effect (actual_c_pressed, derived from visual row r_pv).
-                                for c_iter_vis in 0..NUM_COLS { // Iterate through visual columns
-                                    let iter_lfo_idx = current_lfo_bank * NUM_COLS + c_iter_vis;
-                                    if iter_lfo_idx != actual_r_pressed && iter_lfo_idx < TOTAL_ROWS { // Ensure iter_lfo_idx is valid
-                                         if mapping_guard[iter_lfo_idx][actual_c_pressed] {
-                                            mapping_guard[iter_lfo_idx][actual_c_pressed] = false;
+                                debug!("Attempting to map LFO {} to Effect {}. Applying mutual exclusivity...", actual_r_lfo_idx, actual_c_effect_idx);
+                                // Mutual exclusivity: An Effect (from visual column) can only be driven by one LFO (from visual row).
+                                // Unmap other LFOs (from different visual rows) from this specific Effect (actual_c_effect_idx).
+                                for r_iter_vis in 0..NUM_ROWS { // Iterate through visual rows (LFOs in current bank)
+                                    let iter_lfo_idx = current_lfo_bank * NUM_ROWS + r_iter_vis;
+                                    // If this iter_lfo_idx is different from the LFO we are currently processing (actual_r_lfo_idx)
+                                    if iter_lfo_idx != actual_r_lfo_idx && iter_lfo_idx < TOTAL_ROWS { // Check iter_lfo_idx bounds
+                                         if mapping_guard[iter_lfo_idx][actual_c_effect_idx] { // Check if this other LFO is mapped to the current Effect
+                                            debug!("MUTEX: Unmapping LFO {} from Effect {}", iter_lfo_idx, actual_c_effect_idx);
+                                            mapping_guard[iter_lfo_idx][actual_c_effect_idx] = false;
                                          }
                                     }
                                 }
-                                mapping_guard[actual_r_pressed][actual_c_pressed] = true;
+                                mapping_guard[actual_r_lfo_idx][actual_c_effect_idx] = true;
+                                debug!("Toggled ON mapping: LFO {} to Effect {}", actual_r_lfo_idx, actual_c_effect_idx);
                             }
                             // Grid button presses should always trigger a full refresh of the grid LEDs for the current view
                             if let Err(e) = led_tx.try_send(LedUpdateRequest::FullRefresh) {
@@ -545,10 +558,9 @@ async fn process_midi_messages(app_state: Arc<AppState>, mut midi_rx: mpsc::Rece
                     fader_override_active_guard[current_lfo_bank][actual_col_idx_fader] = true;
                     let fader_float_val = cc_value as f32 / 127.0;
                     fader_override_value_guard[current_lfo_bank][actual_col_idx_fader] = fader_float_val;
-                    debug!("Fader CC: Set val={} for actual_col={}, lfo_bank={}", fader_float_val, actual_col_idx_fader, current_lfo_bank);
+                    debug!("Fader CC: Set val={} for actual_col(Effect)={}, lfo_bank={}", fader_float_val, actual_col_idx_fader, current_lfo_bank);
                     
-                    // Send targeted update for the fader's visual column
-                    if let Err(e) = led_tx.try_send(LedUpdateRequest::FaderColumnRefresh { visual_fader_col_idx: col_index_on_grid }) {
+                    if let Err(e) = led_tx.try_send(LedUpdateRequest::FaderColumnRefresh { actual_effect_idx: actual_col_idx_fader }) {
                         warn!("Failed to send FaderColumnRefresh LED update request: {}", e);
                     }
                 } else { 
@@ -570,49 +582,46 @@ async fn led_update_loop(mut led_rx: mpsc::Receiver<LedUpdateRequest>, midi_out_
         let mut midi_out_guard = midi_out_conn_arc.lock().unwrap();
         match request {
             LedUpdateRequest::FullRefresh => {
-                // Pass led_state to helper, will be modified to use it
                 _refresh_grid_leds(&mut midi_out_guard, &app_state, &mut led_state);
-            }
-            LedUpdateRequest::BankOnlyRefresh => {
-                // Pass led_state to helper, will be modified to use it
-                _update_bank_select_leds(&mut midi_out_guard, &app_state, &mut led_state);
             }
             LedUpdateRequest::BothRefresh => {
-                // Pass led_state to helpers, will be modified to use it
                 _update_bank_select_leds(&mut midi_out_guard, &app_state, &mut led_state);
                 _refresh_grid_leds(&mut midi_out_guard, &app_state, &mut led_state);
             }
-            LedUpdateRequest::FaderColumnRefresh { visual_fader_col_idx } => {
-                _refresh_fader_column_leds(&mut midi_out_guard, &app_state, visual_fader_col_idx, &mut led_state);
+            LedUpdateRequest::FaderColumnRefresh { actual_effect_idx } => {
+                _refresh_fader_column_leds(&mut midi_out_guard, &app_state, actual_effect_idx, &mut led_state);
             }
         }
     }
     info!("LED update loop ended.");
 }
 
-// New helper function to refresh LEDs for a single column
-fn _refresh_fader_column_leds(midi_out_conn: &mut MidiOutputConnection, app_state: &Arc<AppState>, visual_fader_col_idx: usize, led_state: &mut LedState) {
+// Helper function to refresh LEDs for a single fader's column (which is an Effect column)
+fn _refresh_fader_column_leds(midi_out_conn: &mut MidiOutputConnection, app_state: &Arc<AppState>, actual_effect_idx_of_fader: usize, led_state: &mut LedState) {
     let current_lfo_bank = app_state.banks.current_lfo_bank.load(Ordering::SeqCst);
     let current_effect_bank = app_state.banks.current_effect_bank.load(Ordering::SeqCst);
     let mapping_guard = app_state.mapping.read().unwrap();
     let fader_override_active_guard = app_state.fader_override_active.read().unwrap();
 
-    // Iterate through all visual rows (0-7) for the given visual_fader_col_idx (0-7)
-    let c_vis = visual_fader_col_idx; // This is the fixed visual column for the fader
-    if c_vis < NUM_COLS { // Ensure visual_fader_col_idx is within bounds
-        for r_vis in 0..NUM_ROWS { // Iterate through visual rows
-            // Calculate LFO index from visual column (c_vis), Effect index from visual row (r_vis)
-            let actual_r_lfo_idx = current_lfo_bank * NUM_COLS + c_vis;
-            let actual_c_effect_idx = current_effect_bank * NUM_ROWS + r_vis;
+    // Determine the visual column index (c_vis) for this actual_effect_idx_of_fader
+    // This actual_effect_idx_of_fader is what the fader controls.
+    // We need to update the LEDs in the hardware column that corresponds to this effect.
+    let c_vis_of_effect = if actual_effect_idx_of_fader >= current_effect_bank * NUM_COLS && actual_effect_idx_of_fader < (current_effect_bank + 1) * NUM_COLS {
+        Some(actual_effect_idx_of_fader % NUM_COLS)
+    } else {
+        None // This effect is not in the current_effect_bank's view
+    };
+
+    if let Some(c_vis) = c_vis_of_effect { // c_vis is the visual column of the effect/fader
+        for r_vis in 0..NUM_ROWS { // Iterate through visual rows (LFOs)
+            let actual_r_lfo_idx = current_lfo_bank * NUM_ROWS + r_vis;
+            // actual_c_effect_idx is fixed for this fader's column: it's actual_effect_idx_of_fader
             
             let mut led_velocity = LED_OFF;
 
-            if actual_r_lfo_idx < TOTAL_ROWS && actual_c_effect_idx < TOTAL_COLS {
-                // Fader override is fader_override_active[LFO_Bank][Effect_Index]
-                // LFO_Bank is current_lfo_bank. Effect_Index is actual_c_effect_idx.
-                let is_fader_override = fader_override_active_guard[current_lfo_bank][actual_c_effect_idx];
-                // Mapping is mapping[LFO_Index][Effect_Index]
-                let is_mapped = mapping_guard[actual_r_lfo_idx][actual_c_effect_idx];
+            if actual_r_lfo_idx < TOTAL_ROWS { // actual_effect_idx_of_fader is already known to be < TOTAL_COLS if c_vis_of_effect is Some
+                let is_fader_override = fader_override_active_guard[current_lfo_bank][actual_effect_idx_of_fader];
+                let is_mapped = mapping_guard[actual_r_lfo_idx][actual_effect_idx_of_fader];
 
                 if is_fader_override && is_mapped {
                     led_velocity = LED_RED;
@@ -620,7 +629,6 @@ fn _refresh_fader_column_leds(midi_out_conn: &mut MidiOutputConnection, app_stat
                     led_velocity = LED_GREEN;
                 }
             }
-            // Send LED update for the button at (r_vis, c_vis)
             led_state.send_grid_note_if_changed(midi_out_conn, r_vis, c_vis, led_velocity);
         }
     }
@@ -660,9 +668,13 @@ async fn osc_sender_loop(app_state: Arc<AppState>, target_addr: SocketAddr) -> R
                 for actual_lfo_row_idx in (0..TOTAL_ROWS).rev() {
                     if mapping_guard[actual_lfo_row_idx][actual_col_idx] {
                         if actual_lfo_row_idx < latest_lfo_values_guard.len() {
-                            next_osc_values_to_send[actual_lfo_row_idx] = latest_lfo_values_guard[actual_lfo_row_idx];
+                            let lfo_val = latest_lfo_values_guard[actual_lfo_row_idx];
+                            next_osc_values_to_send[actual_col_idx] = lfo_val;
+                            //debug!("OSC_SENDER: Effect {} driven by LFO {} (Value: {:.4})", actual_col_idx + 1, actual_lfo_row_idx + 1, lfo_val);
+                            found_active_driver_for_col = true; 
                         } else {
-                            warn!("actual_lfo_row_idx {} out of bounds for latest_lfo_values (len {}) in sender loop", actual_lfo_row_idx, latest_lfo_values_guard.len());
+                            warn!("actual_lfo_row_idx {} out of bounds for latest_lfo_values (len {}) in sender loop. LFO for Effect {} not applied.", 
+                            actual_lfo_row_idx, latest_lfo_values_guard.len(), actual_col_idx + 1);
                         }
                         break; 
                     }
