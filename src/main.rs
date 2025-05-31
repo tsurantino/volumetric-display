@@ -676,18 +676,10 @@ async fn osc_sender_loop(app_state: Arc<AppState>, target_addr: SocketAddr) -> R
                             if actual_row_idx_lfo < latest_lfo_values_guard.len() {
                                 let lfo_val = latest_lfo_values_guard[actual_row_idx_lfo];
                                 next_osc_values_to_send[actual_col_idx_effect] = lfo_val;
-                                debug!("OSC_SENDER (Bank {}): Effect {} driven by LFO {} (Visual Row in Bank) which is Global LFO Idx {}, Value: {:.4}", 
-                                    active_lfo_bank, actual_col_idx_effect + 1, visual_row_idx_lfo + 1, actual_row_idx_lfo, lfo_val);
                                 found_active_driver_for_col = true; 
-                            } else {
-                                warn!("OSC_SENDER: actual_row_idx_lfo {} out of bounds for latest_lfo_values (len {}). LFO for Effect {} not applied.", 
-                                actual_row_idx_lfo, latest_lfo_values_guard.len(), actual_col_idx_effect + 1);
                             }
                             break; 
                         }
-                    } else {
-                        // This case should ideally not be reached if NUM_ROWS and active_lfo_bank are correct.
-                        warn!("OSC_SENDER: Calculated actual_row_idx_lfo {} is out of TOTAL_ROWS {} bounds.", actual_row_idx_lfo, TOTAL_ROWS);
                     }
                 }
             }
