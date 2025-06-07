@@ -2,6 +2,9 @@ from artnet import Scene, RGB, HSV
 import math
 
 class RainbowScene(Scene):
+    def __init__(self, config):
+        pass
+
     def render(self, raster, time):
         for y in range(raster.height):
             for x in range(raster.width):
