@@ -1,6 +1,7 @@
 load("@rules_python//python:defs.bzl", "py_binary", "py_library")
 load("@py_deps//:requirements.bzl", "requirement")
 load("@hedron_compile_commands//:refresh_compile_commands.bzl", "refresh_compile_commands")
+load("@rules_rust//rust:defs.bzl", "rust_binary")
 
 cc_library(
     name = "volumetric_display",
@@ -103,5 +104,19 @@ py_test(
     srcs = ["control_port_test.py"],
     deps = [
         ":control_port",
+    ],
+)
+
+rust_binary(
+    name = "artnet_mapper",
+    srcs = ["src/main.rs"],
+    deps = [
+        "@crates_in_workspace//:clap",
+        "@crates_in_workspace//:lazy_static",
+        "@crates_in_workspace//:midir",
+        "@crates_in_workspace//:rosc",
+        "@crates_in_workspace//:tokio",
+        "@crates_in_workspace//:tracing",
+        "@crates_in_workspace//:tracing-subscriber",
     ],
 )
