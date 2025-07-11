@@ -55,3 +55,30 @@ The DMX channel mapping passed to the DMX out CHOP can be generated with:
 ```sh
 bazelisk run //:gen_routing_table -- --output-file=$(pwd)/touchdesigner/donut_routing_table.tsv
 ```
+
+## Running Games
+
+The games implementation lives in the `games/` subdirectory. To run the games under simulation, you can start an instance of the display simulator, game server, and controller simulator in three separate terminals like so:
+
+```sh
+# Terminal 1 (Display Simulator)
+bazel run :simulator -- --geometry=20x20x20 --alpha 0.8 -v 0 --ip 0.0.0.0 --rotate_rate=0,0,0 --universes_per_layer=3
+```
+
+```sh
+# Terminal 2 (Controller Simulator)
+bazel run :controller_simulator -- --config (pwd)/controller_config.json
+```
+
+```sh
+# Terminal 3 (Game Server)
+bazel run :sender -- --config=(pwd)/sim_config.json --scene=$(pwd)/game_scene.py --brightness=1 --layer-span=1
+```
+
+Once all three are running, you should see a rotating point cloud in the shape of a cube within the display, and the four controller displays should show a game selection menu. You can interact with each controller using "WASD"-style key assignments at 4 locations on the keyboard. E.g. controller 1 uses keys `2`, `Q`, `W`, `E`, `3` for UP, LEFT, DOWN, RIGHT, SELECT, respectively.
+
+Instead of starting all 3 sequentially, you can also use the convenience run script:
+
+```sh
+./games_simulator_default.sh
+```
