@@ -8,3 +8,4 @@ touchdesigner/experimental/
 touchdesigner/CrashAutoSave.*
 touchdesigner/Backup/*
 touchdesigner/donut.*.toe
+build_cache/

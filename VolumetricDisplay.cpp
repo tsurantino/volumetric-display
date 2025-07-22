@@ -24,11 +24,12 @@ VolumetricDisplay::VolumetricDisplay(int width, int height, int length,
     : left_mouse_button_pressed(false), right_mouse_button_pressed(false),
       width(width), height(height), length(length), ip(ip), port(port),
       universes_per_layer(universes_per_layer), layer_span(layer_span),
-      alpha(alpha), rotation_rate(initial_rotation_rate), show_axis(false),
+      alpha(alpha), running(false), show_axis(false),
       show_wireframe(false), needs_update(false),
-      color_correction_enabled_(color_correction_enabled),
+      rotation_rate(initial_rotation_rate),
       socket(io_service, boost::asio::ip::udp::endpoint(
-                             boost::asio::ip::address::from_string(ip), port)) {
+                             boost::asio::ip::address::from_string(ip), port)),
+      color_correction_enabled_(color_correction_enabled) {
 
   if (universes_per_layer > MAX_UNIVERSES_PER_LAYER) {
     throw std::runtime_error("Layer size too large for ArtNet limitations");
@@ -49,8 +50,16 @@ VolumetricDisplay::VolumetricDisplay(int width, int height, int length,
 
   setupOpenGL();
   camera_position = glm::vec3(0.0f, 0.0f, 0.0f);
-  camera_orientation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
-  camera_distance = std::max(width, std::max(height, length)) * 2.5f;
+
+  glm::quat rot_x = glm::angleAxis(glm::radians(90.0f), glm::vec3(1.0f, 0.0f, 0.0f));
+  glm::quat rot_y = glm::angleAxis(0.0f, glm::vec3(0.0f, 1.0f, 0.0f));
+  glm::quat rot_z = glm::angleAxis(0.0f, glm::vec3(0.0f, 0.0f, 1.0f));
+
+  // Combine rotations and apply to camera orientation
+  // Apply in ZYX order to match common conventions, though order might need
+  // adjustment
+  camera_orientation = rot_z * rot_y * rot_x;
+  camera_distance = std::max(width, std::max(height, length)) * 2.0f;
   left_mouse_button_pressed = false;
   right_mouse_button_pressed = false;
   last_mouse_x = 0.0;
@@ -104,7 +113,7 @@ void VolumetricDisplay::setupOpenGL() {
   }
 
   GLFWwindow *window =
-      glfwCreateWindow(800, 600, "Volumetric Display", nullptr, nullptr);
+      glfwCreateWindow(800, 800, "Volumetric Display", nullptr, nullptr);
   if (!window) {
     glfwTerminate();
     throw std::runtime_error("Failed to create GLFW window");
