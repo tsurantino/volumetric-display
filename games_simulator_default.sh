@@ -6,7 +6,7 @@ function run_display_sim() {
     --alpha 0.8 \
     -v 0 \
     --ip 0.0.0.0 \
-    --rotate_rate=0,0,0 \
+    --rotate_rate=0,10,0 \
     --universes_per_layer=3 &
 }
 
@@ -26,6 +26,7 @@ run_display_sim
 GAME_SIM_PID=$!
 run_controller_sim
 CONTROLLER_SIM_PID=$!
+sleep 3
 run_game_server
 GAME_SERVER_PID=$!
 
