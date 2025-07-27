@@ -7,150 +7,63 @@ import struct
 import time
 import sys
 
-
 @dataclasses.dataclass
 class RGB:
-    """
-    Simple RGB color data class.
-    """
     red: int
     green: int
     blue: int
 
+    @staticmethod
     def from_hsv(hsv):
-        """
-        Convert an HSV color to RGB.
-        """
-        h = hsv.hue / (256 / 6)
-        s = hsv.saturation / 255
-        v = hsv.value / 255
-
+        h, s, v = hsv.hue / 255.0 * 6, hsv.saturation / 255.0, hsv.value / 255.0
         c = v * s
-        x = c * (1 - abs(h % 2 - 1))
+        x = c * (1 - abs((h % 2) - 1))
         m = v - c
-
-        if h < 1:
-            r, g, b = c, x, 0
-        elif h < 2:
-            r, g, b = x, c, 0
-        elif h < 3:
-            r, g, b = 0, c, x
-        elif h < 4:
-            r, g, b = 0, x, c
-        elif h < 5:
-            r, g, b = x, 0, c
-        else:
-            r, g, b = c, 0, x
-
-        return RGB(saturate_u8((r + m) * 255), saturate_u8((g + m) * 255),
-                   saturate_u8((b + m) * 255))
-
+        if 0 <= h < 1: r, g, b = c, x, 0
+        elif 1 <= h < 2: r, g, b = x, c, 0
+        elif 2 <= h < 3: r, g, b = 0, c, x
+        elif 3 <= h < 4: r, g, b = 0, x, c
+        elif 4 <= h < 5: r, g, b = x, 0, c
+        else: r, g, b = c, 0, x
+        return RGB(int((r + m) * 255), int((g + m) * 255), int((b + m) * 255))
 
 @dataclasses.dataclass
 class HSV:
-    """
-    Simple HSV color data class.
-    """
     hue: int
     saturation: int
     value: int
 
-
 @dataclasses.dataclass
 class Raster:
-    """
-    Simple raster data class.
-    """
     width: int
     height: int
     length: int
-    brightness: float
-    data: list[RGB]
-    orientation: list[str]
+    brightness: float = 1.0
+    data: list[RGB] = dataclasses.field(init=False)
 
-    def __init__(self, width, height, length, orientation=None):
-        self.width = width
-        self.height = height
-        self.length = length
-        self.brightness = 1.0
-        self.data = [RGB(0, 0, 0) for _ in range((width * height * length))]
-        self.orientation = orientation or ['X', 'Y', 'Z']
-        self._compute_transform()
-
-    def _compute_transform(self):
-        """Compute the transformation matrix for coordinate mapping."""
-        self.transform = []
-        for coord in self.orientation:
-            axis = coord[-1]  # Get the axis (X, Y, or Z)
-            sign = -1 if coord.startswith('-') else 1
-            if axis == 'X':
-                self.transform.append((0, sign))
-            elif axis == 'Y':
-                self.transform.append((1, sign))
-            else:  # Z
-                self.transform.append((2, sign))
-
-    def _transform_coords(self, x, y, z):
-        """Transform coordinates according to the orientation configuration."""
-        coords = [x, y, z]
-        result = [0, 0, 0]
-        for i, (axis, sign) in enumerate(self.transform):
-            if sign == 1:
-                result[i] = coords[axis]
-            else:  # sign == -1
-                # For negative axes, subtract from the maximum value
-                if axis == 0:  # X
-                    result[i] = self.width - 1 - coords[axis]
-                elif axis == 1:  # Y
-                    result[i] = self.height - 1 - coords[axis]
-                else:  # Z
-                    result[i] = self.length - 1 - coords[axis]
-        return tuple(result)
+    def __post_init__(self):
+        self.data = [RGB(0, 0, 0) for _ in range(self.width * self.height * self.length)]
 
     def set_pix(self, x, y, z, color):
-        """
-        Set a pixel color with coordinate transformation.
-        
-        Args:
-            x, y, z: Original coordinates
-            color: RGB color to set
-        """
-        assert x >= 0 and x < self.width, f"x: {x} width: {self.width}"
-        assert y >= 0 and y < self.height, f"y: {y} height: {self.height}"
-        assert z >= 0 and z < self.length, f"z: {z} length: {self.length}"
+        if 0 <= x < self.width and 0 <= y < self.height and 0 <= z < self.length:
+            idx = z * self.width * self.height + y * self.width + x
+            self.data[idx] = color
 
-        # Transform coordinates
-        tx, ty, tz = self._transform_coords(x, y, z)
-        # Calculate index in the data array
-        idx = ty * self.width + tx + tz * self.width * self.height
-        self.data[idx] = color
+    def get_pix(self, x, y, z):
+        if 0 <= x < self.width and 0 <= y < self.height and 0 <= z < self.length:
+            idx = z * self.width * self.height + y * self.width + x
+            return self.data[idx]
+        return RGB(0, 0, 0)
 
     def clear(self):
-        """
-        Clear the raster.
-        """
-        self.data = [RGB(0, 0, 0) for _ in range((self.width * self.height * self.length))]
-
+        self.data = [RGB(0, 0, 0) for _ in range(self.width * self.height * self.length)]
 
 def saturate_u8(value):
-    """
-    Saturate a value to the range [0, 255].
-    """
     return int(max(0, min(value, 255)))
 
-
 class Scene(ABC):
-    """Base class for scene plugins"""
-
     @abstractmethod
     def render(self, raster: Raster, time: float) -> None:
-        """
-        Update the raster for the current frame
-
-        Args:
-            raster: The Raster object to update
-            time: Current time in seconds
-        """
         pass
 
 
@@ -296,3 +209,4 @@ class ArtNetController:
         # Send Sync Packet
         sync_packet = self.create_sync_packet()
         self.sock.sendto(sync_packet, (self.ip, self.port))
+        

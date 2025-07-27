@@ -1,97 +1,96 @@
 #include "VolumetricDisplay.h"
-#include "absl/flags/flag.h"
-#include "absl/flags/parse.h"
-#include "absl/log/log.h"
-#include "resources/icon.h"
 #include <glm/glm.hpp>
 #include <iostream>
-#include <sstream>
 #include <string>
+#include <vector>
 
-// Define command-line flags using Abseil
-ABSL_FLAG(std::string, geometry, "16x16x16",
-          "Width, height, and length of the display");
-ABSL_FLAG(std::string, ip, "127.0.0.1",
-          "IP address to listen for ArtNet packets");
-ABSL_FLAG(int, port, 6454, "Port to listen for ArtNet packets");
-ABSL_FLAG(int, universes_per_layer, 6, "Number of universes per layer");
-ABSL_FLAG(float, alpha, 0.5, "Alpha value for voxel colors");
-ABSL_FLAG(int, layer_span, 1, "Layer span (1 for 1:1 mapping)");
-ABSL_FLAG(std::string, rotate_rate, "0,0,0",
-          "Continuous rotation rate in degrees/sec for X,Y,Z axes (e.g., "
-          "\"10,0,5\")");
-ABSL_FLAG(bool, color_correction, false, "Enable color correction");
+// A helper function to print usage instructions
+void printUsage(const char* prog_name) {
+    std::cerr << "Usage: " << prog_name << " -c <path_to_config.json> [options]\n\n"
+              << "Required:\n"
+              << "  -c, --config <path>    Path to the display configuration JSON file.\n\n"
+              << "Options:\n"
+              << "  -a, --alpha <value>    Alpha value for voxel transparency (0.0 to 1.0). Default: 0.7\n"
+              << "  -r, --rotation <X,Y,Z> Initial rotation rate in degrees/sec. Default: 0,10,0\n"
+              << "  --color-correction     Enable WS2812B color correction. Default: enabled\n"
+              << "  --no-color-correction  Disable WS2812B color correction.\n"
+              << "  -h, --help             Print this usage message.\n";
+}
 
-// Entry point
-int main(int argc, char *argv[]) {
-  // Parse command-line arguments using Abseil
-  absl::ParseCommandLine(argc, argv);
+int main(int argc, char* argv[]) {
+    // Default values for our settings
+    std::string config_path = "";
+    float alpha = 0.7f;
+    glm::vec3 rotation_rate = glm::vec3(0.0f, glm::radians(10.0f), 0.0f); // Default: 10 degrees/sec on Y-axis
+    bool color_correction_enabled = true;
 
-  try {
-    // Extract parsed arguments
-    std::string geometry = absl::GetFlag(FLAGS_geometry);
-    std::string ip = absl::GetFlag(FLAGS_ip);
-    int port = absl::GetFlag(FLAGS_port);
-    int universes_per_layer = absl::GetFlag(FLAGS_universes_per_layer);
-    int layer_span = absl::GetFlag(FLAGS_layer_span);
-
-    float alpha = absl::GetFlag(FLAGS_alpha);
-    std::string rotate_rate_str = absl::GetFlag(FLAGS_rotate_rate);
-
-    // Parse geometry dimensions
-    int width, height, length;
-    if (sscanf(geometry.c_str(), "%dx%dx%d", &width, &height, &length) != 3) {
-      throw std::runtime_error(
-          "Invalid geometry format. Use WIDTHxHEIGHTxLENGTH (e.g., 16x16x16).");
+    // Manual command-line argument parsing
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if ((arg == "-h") || (arg == "--help")) {
+            printUsage(argv[0]);
+            return 0;
+        } else if ((arg == "-c") || (arg == "--config")) {
+            if (i + 1 < argc) { // Make sure we have a value after the flag
+                config_path = argv[++i];
+            } else {
+                std::cerr << "Error: --config option requires one argument." << std::endl;
+                return 1;
+            }
+        } else if ((arg == "-a") || (arg == "--alpha")) {
+            if (i + 1 < argc) {
+                try {
+                    alpha = std::stof(argv[++i]);
+                } catch (const std::invalid_argument& ia) {
+                    std::cerr << "Error: Invalid alpha value." << std::endl;
+                    return 1;
+                }
+            } else {
+                std::cerr << "Error: --alpha option requires one argument." << std::endl;
+                return 1;
+            }
+        } else if ((arg == "-r") || (arg == "--rotation")) {
+             if (i + 1 < argc) {
+                std::string rates_str = argv[++i];
+                size_t first_comma = rates_str.find(',');
+                size_t second_comma = rates_str.rfind(',');
+                if (first_comma != std::string::npos && second_comma != std::string::npos && first_comma != second_comma) {
+                    try {
+                        float x = std::stof(rates_str.substr(0, first_comma));
+                        float y = std::stof(rates_str.substr(first_comma + 1, second_comma - first_comma - 1));
+                        float z = std::stof(rates_str.substr(second_comma + 1));
+                        rotation_rate = glm::vec3(glm::radians(x), glm::radians(y), glm::radians(z));
+                    } catch (const std::exception& e) {
+                        std::cerr << "Error: Invalid format for rotation rate. Use X,Y,Z" << std::endl;
+                        return 1;
+                    }
+                }
+            } else {
+                std::cerr << "Error: --rotation option requires one argument." << std::endl;
+                return 1;
+            }
+        } else if (arg == "--color-correction") {
+            color_correction_enabled = true;
+        } else if (arg == "--no-color-correction") {
+            color_correction_enabled = false;
+        }
     }
 
-    // Parse rotation rate
-    glm::vec3 rotation_rate(0.0f);
-    std::stringstream ss(rotate_rate_str);
-    std::string segment;
-    int i = 0;
-    while (std::getline(ss, segment, ',') && i < 3) {
-      try {
-        rotation_rate[i++] = std::stof(segment);
-      } catch (const std::invalid_argument &ia) {
-        throw std::runtime_error(
-            "Invalid rotate_rate format. Use comma-separated floats (e.g., "
-            "10,0,5).");
-      } catch (const std::out_of_range &oor) {
-        throw std::runtime_error("Rotation rate value out of range.");
-      }
-    }
-    if (i != 3 || std::getline(ss, segment, ',')) {
-      throw std::runtime_error("Invalid rotate_rate format. Must provide "
-                               "exactly three comma-separated floats (e.g., "
-                               "10,0,5).");
+    // Check if the required config path was provided
+    if (config_path.empty()) {
+        std::cerr << "Error: Configuration file path is required." << std::endl;
+        printUsage(argv[0]);
+        return 1;
     }
 
-    LOG(INFO) << "Starting Volumetric Display with the following parameters:";
-    LOG(INFO) << "Geometry: " << width << "x" << height << "x" << length;
-    LOG(INFO) << "IP: " << ip;
-    LOG(INFO) << "Port: " << port;
-    LOG(INFO) << "Universes per layer: " << universes_per_layer;
-    LOG(INFO) << "Rotation Rate (deg/s): X=" << rotation_rate.x
-              << " Y=" << rotation_rate.y << " Z=" << rotation_rate.z;
+    // Run the application
+    try {
+        VolumetricDisplay display(config_path, alpha, rotation_rate, color_correction_enabled);
+        display.run();
+    } catch (const std::exception& e) {
+        std::cerr << "An error occurred: " << e.what() << std::endl;
+        return 1;
+    }
 
-    const bool color_correction_enabled =
-        absl::GetFlag(FLAGS_color_correction);
-
-    // Create and run the volumetric display
-    VolumetricDisplay display(width, height, length, ip, port,
-                              universes_per_layer, layer_span, alpha,
-                              rotation_rate, color_correction_enabled);
-
-    // Configure icon
-    SetIcon(argv[0]);
-
-    display.run();
-
-  } catch (const std::exception &ex) {
-    std::cerr << "Error: " << ex.what() << std::endl;
-    return EXIT_FAILURE;
-  }
-
-  return EXIT_SUCCESS;
+    return 0;
 }

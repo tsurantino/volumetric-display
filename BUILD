@@ -18,6 +18,7 @@ cc_library(
         "@glew",
         "@glfw",
         "@glm",
+        "@nlohmann_json//:json",
     ],
 )
 

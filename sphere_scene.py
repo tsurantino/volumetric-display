@@ -141,10 +141,11 @@ class BouncingSphereScene(Scene):
 
     RENDER_FADE_MARGIN = 0.2  # Fade out near the edge
 
-    def __init__(self):
+    def __init__(self, config=None):
         self.spheres: List[Sphere] = []
         self.next_spawn = 0.0
         self.spawn_interval = 2.0  # New sphere every 2 seconds
+        self.has_printed_bounds = False
 
     def spawn_sphere(self, time: float, bounds: tuple[float, float,
                                                       float]) -> Sphere:
@@ -182,9 +183,12 @@ class BouncingSphereScene(Scene):
                       mass=mass)
 
     def render(self, raster: Raster, time: float):
+        if not self.has_printed_bounds:
+            print(f"DEBUG: Scene rendering with bounds: Width={raster.width}, Height={raster.height}, Length={raster.length}")
+            self.has_printed_bounds = True
+            
         # Clear the raster
-        for i in range(len(raster.data)):
-            raster.data[i] = RGB(0, 0, 0)
+        raster.clear()
 
         # Spawn new spheres
         if time >= self.next_spawn:
@@ -195,73 +199,54 @@ class BouncingSphereScene(Scene):
 
         # Update and render spheres
         bounds = (raster.width, raster.height, raster.length)
-        new_spheres = []
-        dt = 0.01  # Smaller timestep for better physics
+        dt = 0.016  # Timestep for ~60fps
 
-        # Update physics
-        for sphere in self.spheres:
-            if not sphere.is_expired(time):
-                sphere.update(dt, bounds)
+        # Create a list of active spheres to process
+        active_spheres = [s for s in self.spheres if not s.is_expired(time)]
+        
+        # --- Physics Update Pass ---
+        for sphere in active_spheres:
+            sphere.update(dt, bounds)
+            # Check for collisions with other spheres
+            for other in active_spheres:
+                if sphere != other:
+                    sphere.collide_with(other)
 
-                # Check collisions with other spheres
-                for other in self.spheres:
-                    if sphere != other and not other.is_expired(time):
-                        sphere.collide_with(other)
+        # --- Render Pass ---
+        for sphere in active_spheres:
+            current_radius = sphere.get_current_radius(time)
+            # Bounding box for sphere to optimize rendering range
+            x_min = max(0, int(sphere.x - current_radius))
+            x_max = min(raster.width, int(sphere.x + current_radius + 1))
+            y_min = max(0, int(sphere.y - current_radius))
+            y_max = min(raster.height, int(sphere.y + current_radius + 1))
+            z_min = max(0, int(sphere.z - current_radius))
+            z_max = min(raster.length, int(sphere.z + current_radius + 1))
 
-                        # Get current radius (for growing and shrinking effect)
-                        current_radius = sphere.get_current_radius(time)
+            for x in range(x_min, x_max):
+                for y in range(y_min, y_max):
+                    for z in range(z_min, z_max):
+                        dx = x - sphere.x
+                        dy = y - sphere.y
+                        dz = z - sphere.z
+                        distance_sq = dx*dx + dy*dy + dz*dz
 
-                        # Render sphere
-                        for x in range(
-                                max(0, int(sphere.x - current_radius)),
-                                min(raster.width,
-                                    int(sphere.x + current_radius + 1))):
-                            for y in range(
-                                    max(0, int(sphere.y - current_radius)),
-                                    min(raster.height,
-                                        int(sphere.y + current_radius + 1))):
-                                for z in range(
-                                        max(0, int(sphere.z - current_radius)),
-                                        min(raster.length,
-                                            int(sphere.z + current_radius +
-                                                1))):
-                                    # Calculate distance from sphere center
-                                    dx = x - sphere.x
-                                    dy = y - sphere.y
-                                    dz = z - sphere.z
-                                    distance = math.sqrt(dx * dx + dy * dy +
-                                                         dz * dz)
+                        if distance_sq <= current_radius * current_radius:
+                            distance = math.sqrt(distance_sq)
+                            
+                            # Calculate intensity with soft edge
+                            intensity = 1.0
+                            fade_start = current_radius * (1 - self.RENDER_FADE_MARGIN)
+                            if distance > fade_start:
+                                intensity = 1.0 - (distance - fade_start) / (current_radius * self.RENDER_FADE_MARGIN)
+                            
+                            # Blend with existing color using max to combine lights
+                            existing_color = raster.get_pix(x, y, z)
+                            new_red = max(existing_color.red, int(sphere.color.red * intensity))
+                            new_green = max(existing_color.green, int(sphere.color.green * intensity))
+                            new_blue = max(existing_color.blue, int(sphere.color.blue * intensity))
 
-                                    if distance <= current_radius:
-                                        # Calculate intensity based on distance from center
+                            raster.set_pix(x, y, z, RGB(new_red, new_green, new_blue))
 
-                                        if distance < current_radius * (
-                                                1 - self.RENDER_FADE_MARGIN):
-                                            intensity = 1.0
-                                        else:
-                                            intensity = 1.0 - (
-                                                distance - current_radius *
-                                                (1 - self.RENDER_FADE_MARGIN)
-                                            ) / (current_radius *
-                                                 self.RENDER_FADE_MARGIN)
-                                        idx = y * raster.width + x + z * raster.width * raster.height
-
-                                        # Blend with existing color
-                                        existing = raster.data[idx]
-                                        raster.data[idx] = RGB(
-                                            max(
-                                                existing.red,
-                                                int(sphere.color.red *
-                                                    intensity)),
-                                            max(
-                                                existing.green,
-                                                int(sphere.color.green *
-                                                    intensity)),
-                                            max(
-                                                existing.blue,
-                                                int(sphere.color.blue *
-                                                    intensity)))
-
-                new_spheres.append(sphere)
-
-        self.spheres = new_spheres
+        # Update the sphere list for the next frame
+        self.spheres = active_spheres
