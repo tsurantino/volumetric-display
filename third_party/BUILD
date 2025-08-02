@@ -1,30 +1,29 @@
 package(default_visibility = ["//visibility:public"])
 
-load("@rules_python//python:defs.bzl", "py_runtime", "py_runtime_pair")
-load("@rules_python//python:pip.bzl", "compile_pip_requirements")
+load("@rules_multirun//:defs.bzl", "multirun")
+load("@rules_uv//uv:pip.bzl", "pip_compile")
 
-compile_pip_requirements(
-    name = "requirements",
-    src = "requirements.in",
-    requirements_linux = "requirements_linux.txt",
-    requirements_darwin = "requirements_darwin.txt",
+pip_compile(
+    name = "generate_requirements_linux_txt",
+    python_platform = "x86_64-unknown-linux-gnu",
+    requirements_in = ":requirements.in",
+    requirements_txt = "requirements_linux.txt",
 )
 
-# Python toolchain
-py_runtime(
-    name = "python3_runtime",
-    interpreter = "@python3//:bin/python",
-    python_version = "PY3",
+pip_compile(
+    name = "generate_requirements_darwin_txt",
+    python_platform = "aarch64-apple-darwin",
+    requirements_in = ":requirements.in",
+    requirements_txt = "requirements_darwin.txt",
 )
 
-py_runtime_pair(
-    name = "py_runtime_pair",
-    py2_runtime = None,
-    py3_runtime = ":python3_runtime",
-)
-
-toolchain(
-    name = "py_3_toolchain",
-    toolchain = ":py_runtime_pair",
-    toolchain_type = "@bazel_tools//tools/python:toolchain_type",
+multirun(
+    name = "generate_requirements_lock",
+    commands = [
+        ":generate_requirements_linux_txt",
+        ":generate_requirements_darwin_txt",
+    ],
+    # Running in a single threaded mode allows consecutive `uv` invocations to benefit
+    # from the `uv` cache from the first run.
+    jobs = 1,
 )

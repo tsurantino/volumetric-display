@@ -1,7 +1,8 @@
 load("@rules_python//python:defs.bzl", "py_binary", "py_library")
-load("@py_deps//:requirements.bzl", "requirement")
+load("@pip//:requirements.bzl", "requirement")
 load("@hedron_compile_commands//:refresh_compile_commands.bzl", "refresh_compile_commands")
-load("@rules_rust//rust:defs.bzl", "rust_binary")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_shared_library")
+load("@rules_pyo3//pyo3:defs.bzl", "pyo3_extension")
 
 cc_library(
     name = "volumetric_display",
@@ -55,6 +56,7 @@ py_binary(
 py_library(
     name = "artnet",
     srcs = ["artnet.py"],
+    deps = [":artnet_rs"],
 )
 
 py_binary(
@@ -118,5 +120,14 @@ rust_binary(
         "@crates_in_workspace//:tokio",
         "@crates_in_workspace//:tracing",
         "@crates_in_workspace//:tracing-subscriber",
+    ],
+)
+
+pyo3_extension(
+    name = "artnet_rs",
+    srcs = ["src/lib.rs"],
+    crate_features = [
+        "extension-module",
+        "abi3-py311",
     ],
 )
