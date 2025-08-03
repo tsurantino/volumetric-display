@@ -1,5 +1,8 @@
 {
-    "geometry": "20x20x20",
+  "cubes": [
+    { "position": [0, 0, 0] }
+  ],
+  "cube_geometry": "20x20x20",
     "z_mapping": [
         {
             "ip": "192.168.1.11",

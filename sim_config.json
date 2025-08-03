@@ -5,8 +5,7 @@
   },
   "cube_geometry": "20x20x20",
   "cubes": [
-    { "position": [0, 0, 0] },
-    { "position": [1, 0, 0] }
+    { "position": [0, 0, 0] }
   ],
   "orientation": ["-Z", "Y", "X"],
   "controller_addresses": {
