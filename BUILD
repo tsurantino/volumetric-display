@@ -1,8 +1,9 @@
-load("@rules_python//python:defs.bzl", "py_binary", "py_library")
-load("@pip//:requirements.bzl", "requirement")
 load("@hedron_compile_commands//:refresh_compile_commands.bzl", "refresh_compile_commands")
-load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_shared_library")
+load("@pip//:requirements.bzl", "requirement")
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
 load("@rules_pyo3//pyo3:defs.bzl", "pyo3_extension")
+load("@rules_python//python:defs.bzl", "py_binary", "py_library", "py_test")
+load("@rules_rust//rust:defs.bzl", "rust_binary")
 
 cc_library(
     name = "volumetric_display",
