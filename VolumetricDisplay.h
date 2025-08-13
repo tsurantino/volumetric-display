@@ -46,10 +46,12 @@ private:
   void framebufferSizeCallback(GLFWwindow *window, int width, int height);
   void updateCamera();
   void drawWireframeCube();
+  void drawAxes();
 
   // New shader methods
   void setupShaders();
   void setupWireframeShader();
+  void setupAxesShader();
   GLuint compileShader(GLenum type, const char* source);
 
   glm::vec3 camera_position;
@@ -89,12 +91,16 @@ private:
   GLuint wireframe_vbo;
   GLuint wireframe_ebo;
 
+  GLuint axis_vao;
+  GLuint axis_vbo;
+
   size_t vertex_count;
   size_t num_voxels;
 
   // Shader program
   GLuint shader_program;
   GLuint wireframe_shader_program;
+  GLuint axis_shader_program;
 
   glm::mat4 rotation_matrix;
   glm::mat4 temp_matrix;

@@ -21,17 +21,20 @@ const char* vertex_shader_source = R"glsl(
     #version 330 core
     layout (location = 0) in vec3 aPos;
     layout (location = 1) in vec3 aInstancePosition;
-    layout (location = 2) in vec4 aInstanceColor; // Now a vec4
+    layout (location = 2) in vec4 aInstanceColor;
 
-    out vec4 fColor; // Now a vec4
+    out vec4 fColor;
 
     uniform mat4 model;
     uniform mat4 view;
     uniform mat4 projection;
 
+    uniform float voxel_scale;
+
     void main()
     {
-        gl_Position = projection * view * model * vec4(aPos + aInstancePosition, 1.0);
+        vec3 scaled_pos = aPos * voxel_scale;
+        gl_Position = projection * view * model * vec4(scaled_pos + aInstancePosition, 1.0);
         fColor = aInstanceColor;
     }
 )glsl";
@@ -50,14 +53,13 @@ const char* fragment_shader_source = R"glsl(
 )glsl";
 
 // Wireframe Shaders
+// Wireframe Shaders
 const char* wireframe_vertex_shader_source = R"glsl(
     #version 330 core
     layout (location = 0) in vec3 aPos;
-
     uniform mat4 model;
     uniform mat4 view;
     uniform mat4 projection;
-
     void main()
     {
         gl_Position = projection * view * model * vec4(aPos, 1.0);
@@ -67,12 +69,40 @@ const char* wireframe_vertex_shader_source = R"glsl(
 const char* wireframe_fragment_shader_source = R"glsl(
     #version 330 core
     out vec4 FragColor;
-
     uniform vec3 color;
-
     void main()
     {
         FragColor = vec4(color, 1.0f);
+    }
+)glsl";
+
+// Axis Shaders
+const char* simple_vertex_shader_source = R"glsl(
+    #version 330 core
+    layout (location = 0) in vec3 aPos;
+    layout (location = 1) in vec3 aColor;
+
+    out vec3 fColor;
+
+    uniform mat4 model;
+    uniform mat4 view;
+    uniform mat4 projection;
+
+    void main()
+    {
+        gl_Position = projection * view * model * vec4(aPos, 1.0);
+        fColor = aColor;
+    }
+)glsl";
+
+const char* simple_fragment_shader_source = R"glsl(
+    #version 330 core
+    in vec3 fColor;
+    out vec4 FragColor;
+
+    void main()
+    {
+        FragColor = vec4(fColor, 1.0);
     }
 )glsl";
 
@@ -102,10 +132,8 @@ VolumetricDisplay::VolumetricDisplay(int width, int height, int length,
             << " B=" << util::kColorCorrectorWs2812bOptions.brightness[2];
 
   pixels.resize(width * height * (length / layer_span), {0, 0, 0});
-
   running = true;
   needs_update = false;
-
   rotation_matrix = glm::mat4(1.0f);
   temp_matrix = glm::mat4(1.0f);
 
@@ -123,6 +151,7 @@ VolumetricDisplay::VolumetricDisplay(int width, int height, int length,
 
   setupShaders();
   setupWireframeShader();
+  setupAxesShader();
   setupVBO();
 
   artnet_thread = std::thread(&VolumetricDisplay::listenArtNet, this);
@@ -189,6 +218,24 @@ void VolumetricDisplay::setupWireframeShader() {
     glDeleteShader(fragmentShader);
 }
 
+void VolumetricDisplay::setupAxesShader() {
+    GLuint vertexShader = compileShader(GL_VERTEX_SHADER, simple_vertex_shader_source);
+    GLuint fragmentShader = compileShader(GL_FRAGMENT_SHADER, simple_fragment_shader_source);
+    axis_shader_program = glCreateProgram();
+    glAttachShader(axis_shader_program, vertexShader);
+    glAttachShader(axis_shader_program, fragmentShader);
+    glLinkProgram(axis_shader_program);
+    int success;
+    char infoLog[512];
+    glGetProgramiv(axis_shader_program, GL_LINK_STATUS, &success);
+    if (!success) {
+        glGetProgramInfoLog(axis_shader_program, 512, NULL, infoLog);
+        LOG(FATAL) << "Axis shader linking failed: " << infoLog;
+    }
+    glDeleteShader(vertexShader);
+    glDeleteShader(fragmentShader);
+}
+
 void VolumetricDisplay::drawWireframeCube() {
     glUseProgram(wireframe_shader_program);
 
@@ -211,8 +258,36 @@ void VolumetricDisplay::drawWireframeCube() {
     glBindVertexArray(0);
 }
 
+void VolumetricDisplay::drawAxes() {
+    glUseProgram(axis_shader_program);
+    glLineWidth(2.0f);
 
-// --- REST OF THE FILE ---
+    // Define a reasonable length for the axes
+    float axis_length = std::max({(float)width, (float)height, (float)length}) * 0.25f;
+
+    // NEW: Define an offset to push the axes slightly outside the wireframe
+    float offset = 1.5f;
+
+    // 1. Model matrix: First, create a translation matrix for the offset.
+    // Then, multiply it by the scaling matrix. This shifts the axes' origin.
+    glm::mat4 model = glm::translate(glm::mat4(1.0f), glm::vec3(-offset, -offset, -offset)) * glm::scale(glm::mat4(1.0f), glm::vec3(axis_length));
+
+    // 2. View matrix: Use the SAME view matrix as the voxels to ensure correct alignment.
+    glm::mat4 view = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, -camera_distance)) * glm::toMat4(camera_orientation);
+    view = glm::translate(view, glm::vec3(-width/2.0, -height/2.0, -length/2.0));
+
+    // 3. Projection matrix: This can remain as it was.
+    glm::mat4 projection = glm::perspective(glm::radians(45.0f), viewport_aspect, 0.1f, 500.0f);
+
+    // Pass all three matrices to the axis shader
+    glUniformMatrix4fv(glGetUniformLocation(axis_shader_program, "model"), 1, GL_FALSE, glm::value_ptr(model));
+    glUniformMatrix4fv(glGetUniformLocation(axis_shader_program, "view"), 1, GL_FALSE, glm::value_ptr(view));
+    glUniformMatrix4fv(glGetUniformLocation(axis_shader_program, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
+
+    glBindVertexArray(axis_vao);
+    glDrawArrays(GL_LINES, 0, 6);
+    glBindVertexArray(0);
+}
 
 void VolumetricDisplay::setupOpenGL() {
   if (!glfwInit()) {
@@ -362,6 +437,33 @@ void VolumetricDisplay::setupVBO() {
     glGenBuffers(1, &wireframe_ebo);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, wireframe_ebo);
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(wireframe_indices), wireframe_indices, GL_STATIC_DRAW);
+
+    // AXES SETUP
+    GLfloat axis_vertices[] = {
+        // Position      // Color
+        0.0f, 0.0f, 0.0f,  1.0f, 0.0f, 0.0f, // X-axis Start (Red)
+        1.0f, 0.0f, 0.0f,  1.0f, 0.0f, 0.0f, // X-axis End
+
+        0.0f, 0.0f, 0.0f,  0.0f, 1.0f, 0.0f, // Y-axis Start (Green)
+        0.0f, 1.0f, 0.0f,  0.0f, 1.0f, 0.0f, // Y-axis End
+
+        0.0f, 0.0f, 0.0f,  0.0f, 0.0f, 1.0f, // Z-axis Start (Blue)
+        0.0f, 0.0f, 1.0f,  0.0f, 0.0f, 1.0f, // Z-axis End
+    };
+
+    glGenVertexArrays(1, &axis_vao);
+    glGenBuffers(1, &axis_vbo);
+
+    glBindVertexArray(axis_vao);
+    glBindBuffer(GL_ARRAY_BUFFER, axis_vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(axis_vertices), axis_vertices, GL_STATIC_DRAW);
+
+    // Position attribute
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(GLfloat), (void*)0);
+    glEnableVertexAttribArray(0);
+    // Color attribute
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(GLfloat), (void*)(3* sizeof(GLfloat)));
+    glEnableVertexAttribArray(1);
 
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     glBindVertexArray(0);
@@ -528,17 +630,20 @@ void VolumetricDisplay::render() {
 
   updateColors();
 
+  // Black background
   glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
   glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
   // Draw the voxels
   glUseProgram(shader_program);
+  float voxel_scale = 0.1f;
+    glUniform1f(glGetUniformLocation(shader_program, "voxel_scale"), voxel_scale);
 
   glm::mat4 model = glm::mat4(1.0f);
   glUniformMatrix4fv(glGetUniformLocation(shader_program, "model"), 1, GL_FALSE, glm::value_ptr(model));
 
   glm::mat4 view = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, -camera_distance)) * glm::toMat4(camera_orientation);
-  view = glm::translate(view, glm::vec3(-width/2.0, -height/2.0, -length/2.0));
+  view = glm::translate(view, glm::vec3(-(width - 1) / 2.0f, -(height - 1) / 2.0f, -(length - 1) / 2.0f));
   glUniformMatrix4fv(glGetUniformLocation(shader_program, "view"), 1, GL_FALSE, glm::value_ptr(view));
 
   glm::mat4 projection = glm::perspective(glm::radians(45.0f), viewport_aspect, 0.1f, 500.0f);
@@ -548,9 +653,12 @@ void VolumetricDisplay::render() {
   glDrawElementsInstanced(GL_TRIANGLES, vertex_count, GL_UNSIGNED_INT, 0, num_voxels);
   glBindVertexArray(0);
 
-  // Draw the wireframe if enabled
+  // Draw the wireframe and axes if enabled
   if (show_wireframe) {
       drawWireframeCube();
+  }
+  if (show_axis) {
+      drawAxes();
   }
 
   glfwSwapBuffers(glfwGetCurrentContext());
