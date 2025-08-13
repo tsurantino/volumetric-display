@@ -47,6 +47,11 @@ private:
   void updateCamera();
   void drawWireframeCube();
 
+  // New shader methods
+  void setupShaders();
+  void setupWireframeShader();
+  GLuint compileShader(GLenum type, const char* source);
+
   glm::vec3 camera_position;
   glm::quat camera_orientation;
   float camera_distance;
@@ -75,10 +80,21 @@ private:
   std::atomic<bool> needs_update;
   std::thread artnet_thread;
 
+  GLuint vao;
   GLuint vbo_vertices;
-  GLuint vbo_colors;
-  size_t vertex_count;
   GLuint vbo_indices;
+  GLuint vbo_instance_positions;
+  GLuint vbo_instance_colors;
+  GLuint wireframe_vao;
+  GLuint wireframe_vbo;
+  GLuint wireframe_ebo;
+
+  size_t vertex_count;
+  size_t num_voxels;
+
+  // Shader program
+  GLuint shader_program;
+  GLuint wireframe_shader_program;
 
   glm::mat4 rotation_matrix;
   glm::mat4 temp_matrix;

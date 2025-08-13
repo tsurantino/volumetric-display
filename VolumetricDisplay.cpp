@@ -16,6 +16,67 @@
 
 #include "color_correction.h"
 
+// Voxel Shaders
+const char* vertex_shader_source = R"glsl(
+    #version 330 core
+    layout (location = 0) in vec3 aPos;
+    layout (location = 1) in vec3 aInstancePosition;
+    layout (location = 2) in vec4 aInstanceColor; // Now a vec4
+
+    out vec4 fColor; // Now a vec4
+
+    uniform mat4 model;
+    uniform mat4 view;
+    uniform mat4 projection;
+
+    void main()
+    {
+        gl_Position = projection * view * model * vec4(aPos + aInstancePosition, 1.0);
+        fColor = aInstanceColor;
+    }
+)glsl";
+
+const char* fragment_shader_source = R"glsl(
+    #version 330 core
+    in vec4 fColor; // Now a vec4
+    out vec4 FragColor;
+
+    void main()
+    {
+        if(fColor.a == 0.0)
+            discard; // Discard transparent fragments completely
+        FragColor = fColor;
+    }
+)glsl";
+
+// Wireframe Shaders
+const char* wireframe_vertex_shader_source = R"glsl(
+    #version 330 core
+    layout (location = 0) in vec3 aPos;
+
+    uniform mat4 model;
+    uniform mat4 view;
+    uniform mat4 projection;
+
+    void main()
+    {
+        gl_Position = projection * view * model * vec4(aPos, 1.0);
+    }
+)glsl";
+
+const char* wireframe_fragment_shader_source = R"glsl(
+    #version 330 core
+    out vec4 FragColor;
+
+    uniform vec3 color;
+
+    void main()
+    {
+        FragColor = vec4(color, 1.0f);
+    }
+)glsl";
+
+
 VolumetricDisplay::VolumetricDisplay(int width, int height, int length,
                                      const std::string &ip, int port,
                                      int universes_per_layer, int layer_span,
@@ -55,15 +116,13 @@ VolumetricDisplay::VolumetricDisplay(int width, int height, int length,
   glm::quat rot_y = glm::angleAxis(0.0f, glm::vec3(0.0f, 1.0f, 0.0f));
   glm::quat rot_z = glm::angleAxis(0.0f, glm::vec3(0.0f, 0.0f, 1.0f));
 
-  // Combine rotations and apply to camera orientation
-  // Apply in ZYX order to match common conventions, though order might need
-  // adjustment
   camera_orientation = rot_z * rot_y * rot_x;
   camera_distance = std::max(width, std::max(height, length)) * 2.0f;
-  left_mouse_button_pressed = false;
-  right_mouse_button_pressed = false;
   last_mouse_x = 0.0;
   last_mouse_y = 0.0;
+
+  setupShaders();
+  setupWireframeShader();
   setupVBO();
 
   artnet_thread = std::thread(&VolumetricDisplay::listenArtNet, this);
@@ -71,46 +130,101 @@ VolumetricDisplay::VolumetricDisplay(int width, int height, int length,
 
 VolumetricDisplay::~VolumetricDisplay() { cleanup(); }
 
-void VolumetricDisplay::drawWireframeCube() {
-  glPushMatrix();
-  glTranslatef(-0.5f, -0.5f, -0.5f);
-  glColor3f(1.0f, 1.0f, 1.0f);
-  glBegin(GL_LINES);
-  // Bottom face
-  glVertex3f(0.0f, 0.0f, 0.0f);
-  glVertex3f(width, 0.0f, 0.0f);
-  glVertex3f(width, 0.0f, 0.0f);
-  glVertex3f(width, height, 0.0f);
-  glVertex3f(width, height, 0.0f);
-  glVertex3f(0.0f, height, 0.0f);
-  glVertex3f(0.0f, height, 0.0f);
-  glVertex3f(0.0f, 0.0f, 0.0f);
-  // Top face
-  glVertex3f(0.0f, 0.0f, length);
-  glVertex3f(width, 0.0f, length);
-  glVertex3f(width, 0.0f, length);
-  glVertex3f(width, height, length);
-  glVertex3f(width, height, length);
-  glVertex3f(0.0f, height, length);
-  glVertex3f(0.0f, height, length);
-  glVertex3f(0.0f, 0.0f, length);
-  // Vertical lines
-  glVertex3f(0.0f, 0.0f, 0.0f);
-  glVertex3f(0.0f, 0.0f, length);
-  glVertex3f(width, 0.0f, 0.0f);
-  glVertex3f(width, 0.0f, length);
-  glVertex3f(width, height, 0.0f);
-  glVertex3f(width, height, length);
-  glVertex3f(0.0f, height, 0.0f);
-  glVertex3f(0.0f, height, length);
-  glEnd();
-  glPopMatrix();
+// --- NEW METHOD IMPLEMENTATIONS ---
+
+GLuint VolumetricDisplay::compileShader(GLenum type, const char* source) {
+    GLuint shader = glCreateShader(type);
+    glShaderSource(shader, 1, &source, NULL);
+    glCompileShader(shader);
+
+    int success;
+    char infoLog[512];
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
+    if (!success) {
+        glGetShaderInfoLog(shader, 512, NULL, infoLog);
+        LOG(FATAL) << "Shader compilation failed: " << infoLog;
+    }
+    return shader;
 }
+
+void VolumetricDisplay::setupShaders() {
+    GLuint vertexShader = compileShader(GL_VERTEX_SHADER, vertex_shader_source);
+    GLuint fragmentShader = compileShader(GL_FRAGMENT_SHADER, fragment_shader_source);
+
+    shader_program = glCreateProgram();
+    glAttachShader(shader_program, vertexShader);
+    glAttachShader(shader_program, fragmentShader);
+    glLinkProgram(shader_program);
+
+    int success;
+    char infoLog[512];
+    glGetProgramiv(shader_program, GL_LINK_STATUS, &success);
+    if (!success) {
+        glGetProgramInfoLog(shader_program, 512, NULL, infoLog);
+        LOG(FATAL) << "Shader linking failed: " << infoLog;
+    }
+
+    glDeleteShader(vertexShader);
+    glDeleteShader(fragmentShader);
+}
+
+void VolumetricDisplay::setupWireframeShader() {
+    GLuint vertexShader = compileShader(GL_VERTEX_SHADER, wireframe_vertex_shader_source);
+    GLuint fragmentShader = compileShader(GL_FRAGMENT_SHADER, wireframe_fragment_shader_source);
+
+    wireframe_shader_program = glCreateProgram();
+    glAttachShader(wireframe_shader_program, vertexShader);
+    glAttachShader(wireframe_shader_program, fragmentShader);
+    glLinkProgram(wireframe_shader_program);
+
+    int success;
+    char infoLog[512];
+    glGetProgramiv(wireframe_shader_program, GL_LINK_STATUS, &success);
+    if (!success) {
+        glGetProgramInfoLog(wireframe_shader_program, 512, NULL, infoLog);
+        LOG(FATAL) << "Wireframe shader linking failed: " << infoLog;
+    }
+
+    glDeleteShader(vertexShader);
+    glDeleteShader(fragmentShader);
+}
+
+void VolumetricDisplay::drawWireframeCube() {
+    glUseProgram(wireframe_shader_program);
+
+    // Set model, view, projection matrices for the wireframe
+    glm::mat4 model = glm::scale(glm::mat4(1.0f), glm::vec3(width, height, length));
+    model = glm::translate(model, glm::vec3(0.0f, 0.0f, 0.0f));
+    glUniformMatrix4fv(glGetUniformLocation(wireframe_shader_program, "model"), 1, GL_FALSE, glm::value_ptr(model));
+
+    glm::mat4 view = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, -camera_distance)) * glm::toMat4(camera_orientation);
+    glUniformMatrix4fv(glGetUniformLocation(wireframe_shader_program, "view"), 1, GL_FALSE, glm::value_ptr(view));
+
+    glm::mat4 projection = glm::perspective(glm::radians(45.0f), viewport_aspect, 0.1f, 500.0f);
+    glUniformMatrix4fv(glGetUniformLocation(wireframe_shader_program, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
+
+    // Set wireframe color
+    glUniform3f(glGetUniformLocation(wireframe_shader_program, "color"), 1.0f, 1.0f, 1.0f);
+
+    glBindVertexArray(wireframe_vao);
+    glDrawElements(GL_LINES, 24, GL_UNSIGNED_INT, 0);
+    glBindVertexArray(0);
+}
+
+
+// --- REST OF THE FILE ---
 
 void VolumetricDisplay::setupOpenGL() {
   if (!glfwInit()) {
     throw std::runtime_error("Failed to initialize GLFW");
   }
+
+  glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+  glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+  glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+#ifdef __APPLE__
+  glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
+#endif
 
   GLFWwindow *window =
       glfwCreateWindow(800, 800, "Volumetric Display", nullptr, nullptr);
@@ -119,14 +233,18 @@ void VolumetricDisplay::setupOpenGL() {
     throw std::runtime_error("Failed to create GLFW window");
   }
   glfwMakeContextCurrent(window);
-  glewInit();
+  glewExperimental = GL_TRUE;
+  if (glewInit() != GLEW_OK) {
+      throw std::runtime_error("Failed to initialize GLEW");
+  }
+
 
   glfwSetWindowUserPointer(window, this);
   glfwSetWindowCloseCallback(window, [](GLFWwindow *window) {
     static_cast<VolumetricDisplay *>(glfwGetWindowUserPointer(window))
         ->windowCloseCallback(window);
   });
-  glfwSetMouseButtonCallback(
+   glfwSetMouseButtonCallback(
       window, [](GLFWwindow *window, int button, int action, int mods) {
         static_cast<VolumetricDisplay *>(glfwGetWindowUserPointer(window))
             ->mouseButtonCallback(window, button, action, mods);
@@ -154,94 +272,99 @@ void VolumetricDisplay::setupOpenGL() {
             ->framebufferSizeCallback(window, width, height);
       });
 
-  glEnable(GL_DEPTH_TEST);
-  glEnable(GL_LIGHTING);
-  glEnable(GL_COLOR_MATERIAL);
-  glEnable(GL_BLEND);
-  glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-  glDepthMask(GL_TRUE);
-  glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE);
-
-  const GLfloat kLightColor[] = {1.0f, 1.0f, 1.0f, 1.0f};
-  glLightModelfv(GL_LIGHT_MODEL_AMBIENT, kLightColor);
-
   glfwGetFramebufferSize(window, &viewport_width, &viewport_height);
   glViewport(0, 0, viewport_width, viewport_height);
   viewport_aspect =
       static_cast<float>(viewport_width) / static_cast<float>(viewport_height);
+
+  glEnable(GL_DEPTH_TEST);
+  glEnable(GL_BLEND);
+  glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 }
 
 void VolumetricDisplay::setupVBO() {
-  std::vector<GLfloat> vertices;
-  std::vector<GLfloat> colors;
-  std::vector<GLuint> indices;
+    // VOXEL SETUP
+    num_voxels = width * height * (length / layer_span);
 
-  vertex_count =
-      width * height * (length / layer_span) *
-      36; // 36 indices per voxel (6 faces * 2 triangles * 3 vertices)
+    GLfloat vertices[] = {
+        -0.5f, -0.5f,  0.5f, 0.5f, -0.5f,  0.5f, 0.5f,  0.5f,  0.5f, -0.5f,  0.5f,  0.5f,
+        -0.5f, -0.5f, -0.5f, 0.5f, -0.5f, -0.5f, 0.5f,  0.5f, -0.5f, -0.5f,  0.5f, -0.5f,
+    };
 
-  for (int x = 0; x < width; ++x) {
-    for (int y = 0; y < height; ++y) {
-      for (int z = 0; z < length * layer_span; z += layer_span) {
-        GLfloat size = 0.1f;
+    GLuint indices[] = {
+        0, 1, 2, 2, 3, 0, 1, 5, 6, 6, 2, 1, 5, 4, 7, 7, 6, 5,
+        4, 0, 3, 3, 7, 4, 3, 2, 6, 6, 7, 3, 4, 5, 1, 1, 0, 4
+    };
+    vertex_count = 36;
 
-        // Define the 8 corners of the cube
-        std::array<GLfloat, 24> cube_vertices = {
-            x - size, y - size, z - size, x + size, y - size, z - size,
-            x + size, y + size, z - size, x - size, y + size, z - size,
-            x - size, y - size, z + size, x + size, y - size, z + size,
-            x + size, y + size, z + size, x - size, y + size, z + size,
-        };
-
-        vertices.insert(vertices.end(), cube_vertices.begin(),
-                        cube_vertices.end());
-
-        // Initialize colors (e.g., white for now)
-        for (int i = 0; i < 8; ++i) {
-          colors.push_back(1.0f);  // R
-          colors.push_back(1.0f);  // G
-          colors.push_back(1.0f);  // B
-          colors.push_back(alpha); // A (alpha value for transparency)
+    std::vector<glm::vec3> instance_positions(num_voxels);
+    int i = 0;
+    for (int z = 0; z < length; z += layer_span) {
+        for (int y = 0; y < height; ++y) {
+            for (int x = 0; x < width; ++x) {
+                instance_positions[i++] = glm::vec3(x, y, z);
+            }
         }
-
-        // Define the 12 triangles (36 indices) for the 6 faces of the cube
-        std::array<GLuint, 36> cube_indices = {
-            0, 1, 2, 2, 3, 0, // Front face
-            4, 5, 6, 6, 7, 4, // Back face
-            0, 1, 5, 5, 4, 0, // Bottom face
-            2, 3, 7, 7, 6, 2, // Top face
-            0, 3, 7, 7, 4, 0, // Left face
-            1, 2, 6, 6, 5, 1  // Right face
-        };
-
-        GLuint base_index = static_cast<GLuint>(vertices.size() / 3 - 8);
-        for (auto index : cube_indices) {
-          indices.push_back(base_index + index);
-        }
-      }
     }
-  }
 
-  // Generate and bind Vertex Buffer Object
-  glGenBuffers(1, &vbo_vertices);
-  glBindBuffer(GL_ARRAY_BUFFER, vbo_vertices);
-  glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(GLfloat),
-               vertices.data(), GL_STATIC_DRAW);
-  glBindBuffer(GL_ARRAY_BUFFER, 0); // Unbind the VBO
+    std::vector<glm::vec4> instance_colors(num_voxels, glm::vec4(0.0f, 0.0f, 0.0f, 0.0f)); // Use vec4 for RGBA
 
-  // Generate and bind Color Buffer Object
-  glGenBuffers(1, &vbo_colors);
-  glBindBuffer(GL_ARRAY_BUFFER, vbo_colors);
-  glBufferData(GL_ARRAY_BUFFER, colors.size() * sizeof(GLfloat), colors.data(),
-               GL_DYNAMIC_DRAW);
-  glBindBuffer(GL_ARRAY_BUFFER, 0); // Unbind the CBO
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
 
-  // Generate and bind Index Buffer Object
-  glGenBuffers(1, &vbo_indices);
-  glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, vbo_indices);
-  glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(GLuint),
-               indices.data(), GL_STATIC_DRAW);
-  glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0); // Unbind the IBO
+    glGenBuffers(1, &vbo_vertices);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo_vertices);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(GLfloat), (void*)0);
+    glEnableVertexAttribArray(0);
+
+    glGenBuffers(1, &vbo_indices);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, vbo_indices);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
+
+    glGenBuffers(1, &vbo_instance_positions);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo_instance_positions);
+    glBufferData(GL_ARRAY_BUFFER, num_voxels * sizeof(glm::vec3), &instance_positions[0], GL_STATIC_DRAW);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), (void*)0);
+    glEnableVertexAttribArray(1);
+    glVertexAttribDivisor(1, 1);
+
+    glGenBuffers(1, &vbo_instance_colors);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo_instance_colors);
+    glBufferData(GL_ARRAY_BUFFER, num_voxels * sizeof(glm::vec4), &instance_colors[0], GL_DYNAMIC_DRAW);
+    glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, sizeof(glm::vec4), (void*)0); // Changed size to 4
+    glEnableVertexAttribArray(2);
+    glVertexAttribDivisor(2, 1);
+
+    // WIREFRAME SETUP
+    GLfloat wireframe_vertices[] = {
+        -0.5f, -0.5f, -0.5f,  0.5f, -0.5f, -0.5f,
+         0.5f,  0.5f, -0.5f, -0.5f,  0.5f, -0.5f,
+        -0.5f, -0.5f,  0.5f,  0.5f, -0.5f,  0.5f,
+         0.5f,  0.5f,  0.5f, -0.5f,  0.5f,  0.5f,
+    };
+
+    GLuint wireframe_indices[] = {
+        0, 1, 1, 2, 2, 3, 3, 0, // Bottom face
+        4, 5, 5, 6, 6, 7, 7, 4, // Top face
+        0, 4, 1, 5, 2, 6, 3, 7  // Connecting lines
+    };
+
+    glGenVertexArrays(1, &wireframe_vao);
+    glBindVertexArray(wireframe_vao);
+
+    glGenBuffers(1, &wireframe_vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, wireframe_vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(wireframe_vertices), wireframe_vertices, GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(GLfloat), (void*)0);
+    glEnableVertexAttribArray(0);
+
+    glGenBuffers(1, &wireframe_ebo);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, wireframe_ebo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(wireframe_indices), wireframe_indices, GL_STATIC_DRAW);
+
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindVertexArray(0);
 }
 
 void VolumetricDisplay::listenArtNet() {
@@ -258,7 +381,6 @@ void VolumetricDisplay::listenArtNet() {
       continue;
     } else if (ec) {
       if (!running) {
-        // Assume that the error is due to the socket being closed.
         break;
       }
       LOG(ERROR) << "Error receiving data: " << ec.message();
@@ -316,40 +438,35 @@ void VolumetricDisplay::listenArtNet() {
 }
 
 void VolumetricDisplay::updateColors() {
-  glBindBuffer(GL_ARRAY_BUFFER, vbo_colors);
-  std::vector<GLfloat> colors;
+    // This is the performance fix. We no longer wait for the network thread.
+    // We just lock briefly to copy the data.
+    auto lg = std::lock_guard(pixels_mu);
 
-  auto lg = std::unique_lock(pixels_mu);
+    std::vector<glm::vec4> instance_colors(num_voxels);
 
-  view_update.wait_for(lg, std::chrono::milliseconds(100));
+    for (size_t i = 0; i < num_voxels; ++i) {
+        auto pixel = pixels[i]; // Make a copy
+        if (color_correction_enabled_) {
+            color_corrector_.ReverseCorrectInPlace(pixel.data());
+        }
 
-  for (auto pixel : pixels) {
-    if (color_correction_enabled_) {
-      color_corrector_.ReverseCorrectInPlace(pixel.data());
+        float r = pixel[0] / 255.0f;
+        float g = pixel[1] / 255.0f;
+        float b = pixel[2] / 255.0f;
+
+        // This is the rendering fix: Make black pixels transparent.
+        float current_alpha = (r == 0.0f && g == 0.0f && b == 0.0f) ? 0.0f : alpha;
+
+        instance_colors[i] = glm::vec4(r, g, b, current_alpha);
     }
-    GLfloat r = pixel[0] / 255.0f;
-    GLfloat g = pixel[1] / 255.0f;
-    GLfloat b = pixel[2] / 255.0f;
-    GLfloat a = alpha;
 
-    // If the color is black, make it transparent
-    if (r == 0.0f && g == 0.0f && b == 0.0f) {
-      a = 0.0f;
-    }
-    for (int i = 0; i < 8; ++i) {
-      colors.push_back(r);
-      colors.push_back(g);
-      colors.push_back(b);
-      colors.push_back(a);
-    }
-  }
-
-  glBufferData(GL_ARRAY_BUFFER, colors.size() * sizeof(GLfloat), colors.data(),
-               GL_DYNAMIC_DRAW);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo_instance_colors);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, num_voxels * sizeof(glm::vec4), &instance_colors[0]);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
 }
 
 void VolumetricDisplay::run() {
-  while (running) {
+  while (running && !glfwWindowShouldClose(glfwGetCurrentContext())) {
     render();
     glfwPollEvents();
   }
@@ -357,10 +474,22 @@ void VolumetricDisplay::run() {
 
 void VolumetricDisplay::cleanup() {
   running = false;
-  socket.close(); // Close socket first to unblock the receive operation
+  socket.close();
   if (artnet_thread.joinable()) {
     artnet_thread.join();
   }
+  glDeleteVertexArrays(1, &vao);
+  glDeleteBuffers(1, &vbo_vertices);
+  glDeleteBuffers(1, &vbo_indices);
+  glDeleteBuffers(1, &vbo_instance_positions);
+  glDeleteBuffers(1, &vbo_instance_colors);
+  glDeleteProgram(shader_program);
+
+  glDeleteVertexArrays(1, &wireframe_vao);
+  glDeleteBuffers(1, &wireframe_vbo);
+  glDeleteBuffers(1, &wireframe_ebo);
+  glDeleteProgram(wireframe_shader_program);
+
   glfwTerminate();
 }
 
@@ -376,93 +505,53 @@ void VolumetricDisplay::framebufferSizeCallback(GLFWwindow *window, int width,
 }
 
 void VolumetricDisplay::updateCamera() {
-  glMatrixMode(GL_MODELVIEW);
-  glLoadIdentity();
-  gluPerspective(45.0f, viewport_aspect, 0.1f, 100.0f);
-  glTranslatef(0, 0, -camera_distance);
-  glTranslatef(camera_position.x, camera_position.y, camera_position.z);
-  glm::mat4 rotation_matrix = glm::toMat4(camera_orientation);
-  glMultMatrixf(glm::value_ptr(rotation_matrix));
-  glTranslatef(-width / 2.0f, -height / 2.0f, -length / 2.0f);
+    // This logic is now handled inside the render loop with projection and view matrices
 }
 
 void VolumetricDisplay::render() {
-  // Calculate delta time
   double current_time = glfwGetTime();
   double delta_time = current_time - last_frame_time;
   last_frame_time = current_time;
 
-  // Apply continuous rotation
-  if (glm::length(rotation_rate) > 0.0f) { // Only rotate if rate is non-zero
-    float angle_x =
-        glm::radians(rotation_rate.x * static_cast<float>(delta_time));
-    float angle_y =
-        glm::radians(rotation_rate.y * static_cast<float>(delta_time));
-    float angle_z =
-        glm::radians(rotation_rate.z * static_cast<float>(delta_time));
+  if (glm::length(rotation_rate) > 0.0f) {
+    float angle_x = glm::radians(rotation_rate.x * static_cast<float>(delta_time));
+    float angle_y = glm::radians(rotation_rate.y * static_cast<float>(delta_time));
+    float angle_z = glm::radians(rotation_rate.z * static_cast<float>(delta_time));
 
-    // Create rotation quaternions for each axis
     glm::quat rot_x = glm::angleAxis(angle_x, glm::vec3(1.0f, 0.0f, 0.0f));
     glm::quat rot_y = glm::angleAxis(angle_y, glm::vec3(0.0f, 1.0f, 0.0f));
     glm::quat rot_z = glm::angleAxis(angle_z, glm::vec3(0.0f, 0.0f, 1.0f));
 
-    // Combine rotations and apply to camera orientation
-    // Apply in ZYX order to match common conventions, though order might need
-    // adjustment
-    camera_orientation = rot_z * rot_y * rot_x * camera_orientation;
-    camera_orientation =
-        glm::normalize(camera_orientation); // Normalize to prevent drift
+    camera_orientation = rot_y * rot_x * rot_z * camera_orientation;
+    camera_orientation = glm::normalize(camera_orientation);
   }
 
   updateColors();
 
+  glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
   glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-  glMatrixMode(GL_MODELVIEW);
-  glLoadIdentity();
-  gluPerspective(45.0f, viewport_aspect, 0.1f, 100.0f);
-  updateCamera();
+  // Draw the voxels
+  glUseProgram(shader_program);
 
-  glBindBuffer(GL_ARRAY_BUFFER, vbo_vertices);
-  glEnableClientState(GL_VERTEX_ARRAY);
-  glVertexPointer(3, GL_FLOAT, 0, nullptr);
+  glm::mat4 model = glm::mat4(1.0f);
+  glUniformMatrix4fv(glGetUniformLocation(shader_program, "model"), 1, GL_FALSE, glm::value_ptr(model));
 
-  glBindBuffer(GL_ARRAY_BUFFER, vbo_colors);
-  glEnableClientState(GL_COLOR_ARRAY);
-  glColorPointer(4, GL_FLOAT, 0, nullptr);
+  glm::mat4 view = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, -camera_distance)) * glm::toMat4(camera_orientation);
+  view = glm::translate(view, glm::vec3(-width/2.0, -height/2.0, -length/2.0));
+  glUniformMatrix4fv(glGetUniformLocation(shader_program, "view"), 1, GL_FALSE, glm::value_ptr(view));
 
-  glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, vbo_indices);
-  glDrawElements(GL_TRIANGLES, vertex_count, GL_UNSIGNED_INT, nullptr);
-  glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+  glm::mat4 projection = glm::perspective(glm::radians(45.0f), viewport_aspect, 0.1f, 500.0f);
+  glUniformMatrix4fv(glGetUniformLocation(shader_program, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
 
-  if (show_axis) {
-    // Push the transform
-    glPushMatrix();
-    glTranslatef(-1, -1, -1);
-    glBegin(GL_LINES);
-    // X axis (red)
-    glColor3f(10.0f, 0.0f, 0.0f);
-    glVertex3f(0.0f, 0.0f, 0.0f);
-    glVertex3f(5.0f, 0.0f, 0.0f);
-    // Y axis (green)
-    glColor3f(0.0f, 1.0f, 0.0f);
-    glVertex3f(0.0f, 0.0f, 0.0f);
-    glVertex3f(0.0f, 5.0f, 0.0f);
-    // Z axis (blue)
-    glColor3f(0.0f, 0.0f, 1.0f);
-    glVertex3f(0.0f, 0.0f, 0.0f);
-    glVertex3f(0.0f, 0.0f, 5.0f);
-    glEnd();
-    // Pop the transform
-    glPopMatrix();
-  }
+  glBindVertexArray(vao);
+  glDrawElementsInstanced(GL_TRIANGLES, vertex_count, GL_UNSIGNED_INT, 0, num_voxels);
+  glBindVertexArray(0);
 
+  // Draw the wireframe if enabled
   if (show_wireframe) {
-    drawWireframeCube();
+      drawWireframeCube();
   }
-
-  glDisableClientState(GL_VERTEX_ARRAY);
-  glDisableClientState(GL_COLOR_ARRAY);
 
   glfwSwapBuffers(glfwGetCurrentContext());
 }
@@ -481,7 +570,7 @@ void VolumetricDisplay::keyCallback(GLFWwindow *window, int key, int scancode,
 }
 
 void VolumetricDisplay::rotate(float angle, float x, float y, float z) {
-  glm::vec3 axis(x, y, z);
+  glm::vec3 axis = glm::normalize(glm::vec3(x, y, z));
   glm::quat rotation = glm::angleAxis(glm::radians(angle), axis);
   camera_orientation = rotation * camera_orientation;
 }
@@ -489,32 +578,20 @@ void VolumetricDisplay::rotate(float angle, float x, float y, float z) {
 void VolumetricDisplay::windowCloseCallback(GLFWwindow *window) {
   VLOG(0) << "Window closed";
   running = false;
-  socket.close(); // Close socket first to unblock the receive operation
-  if (artnet_thread.joinable()) {
-    artnet_thread.join();
-  }
-
+  socket.close();
   view_update.notify_all();
 }
 
 void VolumetricDisplay::mouseButtonCallback(GLFWwindow *window, int button,
                                             int action, int mods) {
-  if (action == GLFW_PRESS) {
-    if (button == GLFW_MOUSE_BUTTON_LEFT) {
-      if (mods & GLFW_MOD_SHIFT) {
-        right_mouse_button_pressed = true;
-      } else {
-        left_mouse_button_pressed = true;
+  if (button == GLFW_MOUSE_BUTTON_LEFT) {
+      if (action == GLFW_PRESS) {
+          left_mouse_button_pressed = true;
+          glfwGetCursorPos(window, &last_mouse_x, &last_mouse_y);
+      } else if (action == GLFW_RELEASE) {
+          left_mouse_button_pressed = false;
       }
-    }
-  } else if (action == GLFW_RELEASE) {
-    if (button == GLFW_MOUSE_BUTTON_LEFT) {
-      right_mouse_button_pressed = false;
-      left_mouse_button_pressed = false;
-    }
   }
-
-  view_update.notify_all();
 }
 
 void VolumetricDisplay::cursorPositionCallback(GLFWwindow *window, double xpos,
@@ -522,12 +599,11 @@ void VolumetricDisplay::cursorPositionCallback(GLFWwindow *window, double xpos,
   if (left_mouse_button_pressed) {
     float dx = static_cast<float>(xpos - last_mouse_x);
     float dy = static_cast<float>(ypos - last_mouse_y);
-    rotate(dx * 0.2f, 0.0f, 1.0f, 0.0f);
-    rotate(dy * 0.2f, 1.0f, 0.0f, 0.0f);
-  } else if (right_mouse_button_pressed) {
-    float dx = static_cast<float>(xpos - last_mouse_x);
-    float dy = static_cast<float>(ypos - last_mouse_y);
-    camera_position -= glm::vec3(-dx * 0.05f, dy * 0.05f, 0.0f);
+
+    glm::quat rot_x = glm::angleAxis(glm::radians(dy * 0.2f), glm::vec3(1.0f, 0.0f, 0.0f));
+    glm::quat rot_y = glm::angleAxis(glm::radians(dx * 0.2f), glm::vec3(0.0f, 1.0f, 0.0f));
+
+    camera_orientation = rot_y * rot_x * camera_orientation;
   }
   last_mouse_x = xpos;
   last_mouse_y = ypos;
@@ -537,7 +613,7 @@ void VolumetricDisplay::cursorPositionCallback(GLFWwindow *window, double xpos,
 
 void VolumetricDisplay::scrollCallback(GLFWwindow *window, double xoffset,
                                        double yoffset) {
-  camera_distance -= static_cast<float>(yoffset);
+  camera_distance -= static_cast<float>(yoffset) * 2.0f;
   if (camera_distance < 1.0f) {
     camera_distance = 1.0f;
   }
