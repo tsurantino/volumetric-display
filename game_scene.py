@@ -12,7 +12,9 @@ from games.util.game_util import Button, ButtonState, ControllerInputHandler
 
 class GameScene(Scene):
 
-    def __init__(self, width=20, height=20, length=20, frameRate=30, config=None):
+    def __init__(
+        self, width=20, height=20, length=20, frameRate=30, config=None, control_port_manager=None
+    ):
         super().__init__()
         self.width = width
         self.height = height
@@ -30,16 +32,27 @@ class GameScene(Scene):
 
         # Store controller mapping from config
         self.controller_mapping = {}
-        if config and "scene" in config and "3d_snake" in config["scene"]:
-            scene_config = config["scene"]["3d_snake"]
-            if "controller_mapping" in scene_config:
-                for role, dip in scene_config["controller_mapping"].items():
-                    try:
-                        player_id = PlayerID[role.upper()]
-                        self.controller_mapping[dip] = player_id
-                        print(f"Mapped controller DIP {dip} to {player_id.name}")
-                    except KeyError:
-                        print(f"Warning: Unknown player role '{role}' in controller mapping")
+        print(f"Debug: config = {config}")
+        if config and "scene" in config:
+            print(f"Debug: scene keys = {list(config['scene'].keys())}")
+            if "3d_snake" in config["scene"]:
+                scene_config = config["scene"]["3d_snake"]
+                print(f"Debug: 3d_snake config = {scene_config}")
+                if "controller_mapping" in scene_config:
+                    for role, dip in scene_config["controller_mapping"].items():
+                        try:
+                            player_id = PlayerID[role.upper()]
+                            self.controller_mapping[dip] = player_id
+                            print(f"Mapped controller DIP {dip} to {player_id.name}")
+                        except KeyError:
+                            print(f"Warning: Unknown player role '{role}' in controller mapping")
+                else:
+                    print("Debug: No controller_mapping found in 3d_snake config")
+            else:
+                print("Debug: 3d_snake not found in scene config")
+        else:
+            print("Debug: No scene config found")
+        print(f"Debug: Final controller_mapping = {self.controller_mapping}")
 
         # Initialize controller input handler
         # Prepare addresses_to_enumerate for ControllerInputHandler
@@ -81,10 +94,10 @@ class GameScene(Scene):
                 "use its default enumeration (if any)."
             )
 
-        # Pass controller_mapping for role assignment AND addresses_for_handler for ControlPort
+        # Pass controller_mapping for role assignment AND control_port_manager
         self.input_handler = ControllerInputHandler(
             controller_mapping=self.controller_mapping,
-            hosts_and_ports=addresses_for_handler,
+            control_port_manager=control_port_manager,
         )
         if not self.input_handler.start_initialization():
             print("GameScene: ControllerInputHandler initialization failed.")
@@ -254,6 +267,11 @@ class GameScene(Scene):
     async def update_controller_display_state(self, controller_state, player_id):
         """Update the controller's LCD display for this player."""
 
+        # Validate controller_state
+        if controller_state is None:
+            print(f"Warning: controller_state is None for player_id {player_id}")
+            return
+
         # Clear the display first
         controller_state.clear()
 
@@ -274,7 +292,8 @@ class GameScene(Scene):
                 controller_state.write_lcd(0, 0, "GAME SELECT ERROR")
                 controller_state.write_lcd(0, 1, "CONTROLLER DIP")
                 controller_state.write_lcd(0, 2, "NOT IDENTIFIED")
-                await controller_state.commit()
+                if controller_state is not None:
+                    await controller_state.commit()
                 return
 
             current_selection = self.menu_selections.get(controller_dip, 0)
@@ -379,11 +398,24 @@ class GameScene(Scene):
                     controller_state.write_lcd(0, 1, f"{self.current_game.__class__.__name__}")
                     controller_state.write_lcd(0, 2, "NO DISPLAY METHOD")
                     controller_state.write_lcd(0, 3, "IMPLEMENTED")
-                    await controller_state.commit()
+                    if controller_state is not None:
+                        await controller_state.commit()
+                    else:
+                        print(
+                            f"Warning: controller_state is None in fallback commit for player_id {player_id}"
+                        )
             return  # Return early as the current_game will handle commit
 
         # Commit the display updates for GameScene's own displays
-        await controller_state.commit()
+        if controller_state is not None:
+            try:
+                await controller_state.commit()
+            except Exception as e:
+                print(f"Error committing for player_id {player_id}: {e}")
+                print(f"controller_state type: {type(controller_state)}")
+                print(f"controller_state: {controller_state}")
+        else:
+            print(f"Warning: controller_state is None at final commit for player_id {player_id}")
 
     def update_game_state(self):
         """Update the game state."""
@@ -443,7 +475,7 @@ class GameScene(Scene):
             # Check for new inputs to add "kicks"
             if self.input_handler:
                 for controller_id, (
-                    controller_state,
+                    loop_controller_state,
                     _,
                 ) in self.input_handler.controllers.items():
                     if self.button_pressed:

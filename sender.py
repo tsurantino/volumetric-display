@@ -2,12 +2,28 @@ import argparse
 import json
 import math
 import time
-from typing import Tuple
 
 from artnet import RGB, ArtNetController, DisplayProperties, Raster, Scene, load_scene
 
+# Try to use Rust-based control port for web monitoring
+try:
+    from control_port_rust import create_control_port_from_config
+
+    CONTROL_PORT_AVAILABLE = True
+    print("Using Rust-based control port with web monitoring")
+except ImportError:
+    CONTROL_PORT_AVAILABLE = False
+    print("Control port not available - web monitoring disabled")
+
+# Config (ARTNET IP & PORT are handled via sim_config updates and specified there)
+WEB_MONITOR_PORT = 8080  # Port for web monitoring interface
+UNIVERSE = 0  # Universe ID
+CHANNELS = 512  # Max DMX channels
+
 
 class DisplayConfig:
+    """Configuration for the volumetric display."""
+
     def __init__(self, config_path: str):
         with open(config_path, "r") as f:
             config = json.load(f)
@@ -33,43 +49,31 @@ class DisplayConfig:
                 }
             )
 
-        # Parse orientation
-        self.orientation = config.get("orientation", ["X", "Y", "Z"])
-        self._validate_orientation()
-        self._compute_transform()
+        self.orientation = config.get("orientation", "xyz")
 
-    def _validate_orientation(self):
-        """Validate that orientation contains valid coordinate mappings."""
-        valid_coords = {"X", "Y", "Z", "-X", "-Y", "-Z"}
-        if len(self.orientation) != 3:
-            raise ValueError("Orientation must specify exactly 3 coordinates")
-        if not all(coord in valid_coords for coord in self.orientation):
-            raise ValueError(f"Invalid coordinate in orientation. Must be one of: {valid_coords}")
-        # Extract just the axis letters and check for uniqueness
-        axes = [coord[-1] for coord in self.orientation]
-        if len(set(axes)) != 3:
-            raise ValueError("Each coordinate axis must appear exactly once in orientation")
+        # Validate dimensions
+        if not all(d > 0 for d in [self.width, self.height, self.length]):
+            raise ValueError("Display dimensions must be positive integers")
 
-    def _compute_transform(self):
-        """Compute the transformation matrix for coordinate mapping."""
-        self.transform = []
-        for coord in self.orientation:
-            axis = coord[-1]  # Get the axis (X, Y, or Z)
-            sign = -1 if coord.startswith("-") else 1
-            if axis == "X":
-                self.transform.append((0, sign))
-            elif axis == "Y":
-                self.transform.append((1, sign))
-            else:  # Z
-                self.transform.append((2, sign))
 
-    def transform_coordinates(self, x: int, y: int, z: int) -> Tuple[int, int, int]:
-        """Transform coordinates according to the orientation configuration."""
-        coords = [x, y, z]
-        result = [0, 0, 0]
-        for i, (axis, sign) in enumerate(self.transform):
-            result[i] = coords[axis] * sign
-        return tuple(result)
+def create_controllers_from_config(config_path: str) -> dict:
+    """Create ArtNet controllers based on the configuration file."""
+    with open(config_path, "r") as f:
+        config = json.load(f)
+
+    controllers = {}
+    controller_mappings = []
+
+    # Extract controller mappings from config (using z_mapping field)
+    mappings = config.get("z_mapping", [])
+    for mapping in mappings:
+        ip = mapping["ip"]
+        port = mapping["port"]
+        if ip not in controllers:
+            controllers[ip] = ArtNetController(ip, port)
+        controller_mappings.append((controllers[ip], mapping))
+
+    return controllers, controller_mappings
 
 
 def create_default_scene():
@@ -99,26 +103,41 @@ def create_default_scene():
 
 
 def main():
-    parser = argparse.ArgumentParser(description="ArtNet DMX Transmission with Sync")
+    parser = argparse.ArgumentParser(description="Send ArtNet DMX data to volumetric display")
+    parser.add_argument("--config", required=True, help="Path to display configuration JSON")
+    parser.add_argument("--scene", required=True, help="Path to scene Python file")
     parser.add_argument(
-        "--config",
-        type=str,
-        required=True,
-        help="Path to display configuration JSON file",
+        "--brightness", type=float, default=1.0, help="Brightness multiplier (0.0-1.0)"
     )
-    parser.add_argument("--layer-span", type=int, default=1, help="Layer span (1 for 1:1 mapping)")
     parser.add_argument(
-        "--brightness", type=float, default=0.05, help="Brightness factor (0.0 to 1.0)"
+        "--layer-span", type=int, default=1, help="Number of layers to skip between universes"
     )
-    parser.add_argument("--scene", type=str, help="Path to a scene plugin file")
+    parser.add_argument(
+        "--web-monitor-port", type=int, default=WEB_MONITOR_PORT, help="Web monitor port"
+    )
+
     args = parser.parse_args()
 
-    # 1. Load display configuration from JSON
+    # Load display configuration from JSON
     display_config = DisplayConfig(args.config)
     if not display_config.cubes:
         raise ValueError("Configuration must contain at least one cube.")
 
-    # 2. Calculate the total bounding box to create one large "world" raster
+    # Start control port manager for web monitoring if available
+    control_port_manager = None
+    if CONTROL_PORT_AVAILABLE:
+        try:
+            control_port_manager = create_control_port_from_config(
+                args.config, args.web_monitor_port
+            )
+            print(
+                f"🌐 Control port manager started with web monitoring on port {args.web_monitor_port}"
+            )
+        except Exception as e:
+            print(f"Warning: Failed to start control port manager: {e}")
+            print("Continuing without web monitoring...")
+
+    # Create raster with full geometry (including expanding across multiple cubes)
     all_x = [c["position"][0] for c in display_config.cubes]
     all_y = [c["position"][1] for c in display_config.cubes]
     all_z = [c["position"][2] for c in display_config.cubes]
@@ -144,7 +163,7 @@ def main():
         length=world_length,
     )
 
-    # 3. Set up handlers for each physical display
+    # Set up handlers for each physical display
     physical_displays = []
     for cube_config in display_config.cubes:
         physical_displays.append(
@@ -157,27 +176,43 @@ def main():
             }
         )
 
-    # 4. Load the scene plugin
+    # Load and run the scene
     try:
         # Pass the world dimensions to the scene so it knows the size of its canvas
         scene = (
-            load_scene(args.scene, properties=display_props)
+            load_scene(
+                args.scene, properties=display_props, control_port_manager=control_port_manager
+            )
             if args.scene
             else create_default_scene()
         )
-    except (ImportError, ValueError) as e:
-        print(f"Error loading scene: {e}")
-        raise e
 
-    # 5. Start the main render loop
-    start_time = time.monotonic()
-    print("🚀 Starting ArtNet Transmission (Single Raster Mode)...")
-    print(f"World Raster Dimensions: {world_width}x{world_height}x{world_length}")
-    print(f"Managing {len(physical_displays)} physical cubes.")
+        print("🚀 Starting ArtNet Transmission (Single Raster Mode)...")
+        print(f"🎬 Playing scene: {args.scene}")
+        print(f"🧊 Managing {len(physical_displays)} physical cubes.")
+        print(f"📐 World raster dimensions: {world_width}x{world_height}x{world_length}")
+        print(f"💡 Brightness: {args.brightness}")
+        print(f"🔗 Layer span: {args.layer_span}")
 
-    try:
+        # Show game controller information if available
+        if (
+            hasattr(scene, "input_handler")
+            and scene.input_handler
+            and scene.input_handler.initialized
+        ):
+            game_controllers = len(scene.input_handler.controllers)
+            print(f"🎮 Connected {game_controllers} game controllers for player input")
+
+        # Create controllers from config
+        controllers, controller_mappings = create_controllers_from_config(args.config)
+        print(f"🎛️  Found {len(controllers)} ArtNet controllers for LED output")
+
+        # Main rendering and transmission loop
+        print("🔁 Starting main loop...")
+        start_time = time.time()
+
         while True:
-            current_time = time.monotonic() - start_time
+            current_time = time.time() - start_time
 
             # A. SCENE RENDER: The active scene draws on the single large world_raster.
             scene.render(world_raster, current_time)
@@ -225,8 +260,33 @@ def main():
 
             time.sleep(1 / 30.0)  # Send updates at 30Hz
 
+    except (ImportError, ValueError) as e:
+        print(f"Error loading scene: {e}")
+        raise e
     except KeyboardInterrupt:
         print("\n🛑 Transmission stopped by user.")
+    except Exception as e:
+        print(f"\n❌ Error in main loop: {e}")
+        import traceback
+
+        traceback.print_exc()
+    finally:
+        # Clean up scene and controller input handler first
+        if "scene" in locals() and hasattr(scene, "input_handler") and scene.input_handler:
+            try:
+                print("🛑 Stopping controller input handler...")
+                scene.input_handler.stop()
+                print("✅ Controller input handler stopped")
+            except Exception as e:
+                print(f"Warning: Error stopping controller input handler: {e}")
+
+        # Clean up control port manager only when the entire program is exiting
+        if control_port_manager:
+            try:
+                control_port_manager.shutdown()
+                print("🌐 Control port manager stopped")
+            except Exception as e:
+                print(f"Error stopping control port manager: {e}")
 
 
 if __name__ == "__main__":
