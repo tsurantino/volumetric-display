@@ -4,7 +4,7 @@ import math
 import time
 from typing import Tuple
 
-from artnet import RGB, ArtNetController, Raster, Scene, load_scene
+from artnet import RGB, ArtNetController, DisplayProperties, Raster, Scene, load_scene
 
 
 class DisplayConfig:
@@ -137,6 +137,13 @@ def main():
     world_raster = Raster(world_width, world_height, world_length)
     world_raster.brightness = args.brightness
 
+    # Create the structured properties object
+    display_props = DisplayProperties(
+        width=world_width,
+        height=world_height,
+        length=world_length,
+    )
+
     # 3. Set up handlers for each physical display
     physical_displays = []
     for cube_config in display_config.cubes:
@@ -153,13 +160,10 @@ def main():
     # 4. Load the scene plugin
     try:
         # Pass the world dimensions to the scene so it knows the size of its canvas
-        scene_config = {
-            "width": world_width,
-            "height": world_height,
-            "length": world_length,
-        }
         scene = (
-            load_scene(args.scene, config=scene_config) if args.scene else create_default_scene()
+            load_scene(args.scene, properties=display_props)
+            if args.scene
+            else create_default_scene()
         )
     except (ImportError, ValueError) as e:
         print(f"Error loading scene: {e}")

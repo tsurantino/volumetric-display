@@ -140,7 +140,7 @@ class BouncingSphereScene(Scene):
 
     RENDER_FADE_MARGIN = 0.2  # Fade out near the edge
 
-    def __init__(self, config: dict):
+    def __init__(self, **kwargs):
         """
         Initializes the scene using a configuration dictionary.
 
@@ -149,14 +149,20 @@ class BouncingSphereScene(Scene):
                            the total width, height, and length of the
                            volumetric display space.
         """
+        properties = kwargs.get("properties")
+        if not properties:
+            raise ValueError(
+                "BouncingSphereScene requires a 'properties' object with display dimensions."
+            )
+
         self.spheres: List[Sphere] = []
         self.next_spawn = 0.0
         self.spawn_interval = 2.0  # New sphere every 2 seconds
 
         # Read the total dimensions of the scene from the config
-        self.width = config.get("width", 32)
-        self.height = config.get("height", 32)
-        self.length = config.get("length", 32)
+        self.width = properties.width
+        self.height = properties.height
+        self.length = properties.length
         self.bounds = (self.width, self.height, self.length)
 
     def spawn_sphere(self, time: float) -> Sphere:

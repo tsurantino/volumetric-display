@@ -8,6 +8,15 @@ from abc import ABC, abstractmethod
 
 
 @dataclasses.dataclass
+class DisplayProperties:
+    """A structured way to hold the global properties of the display."""
+
+    width: int
+    height: int
+    length: int
+
+
+@dataclasses.dataclass
 class RGB:
     """
     Simple RGB color data class.
@@ -159,7 +168,7 @@ class Scene(ABC):
         pass
 
 
-def load_scene(path: str, config=None) -> Scene:
+def load_scene(path: str, **kwargs) -> Scene:
     """
     Load a scene plugin from a Python file
 
@@ -205,7 +214,7 @@ def load_scene(path: str, config=None) -> Scene:
             raise ValueError(f"Multiple Scene subclasses found in {path}")
 
         # Create and return instance
-        return scene_classes[0](config=config)
+        return scene_classes[0](**kwargs)
 
     finally:
         # Restore original sys.path
