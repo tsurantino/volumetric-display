@@ -25,6 +25,7 @@ ABSL_FLAG(std::string, rotate_rate, "0,0,0",
           "\"10,0,5\")");
 ABSL_FLAG(bool, color_correction, false, "Enable color correction");
 ABSL_FLAG(float, voxel_scale, 0.15f, "Scaling factor for individual voxels (e.g., 0.8 for smaller voxels with gaps)");
+ABSL_FLAG(int, universes_per_layer, 3, "Number of universes per layer");
 
 // Entry point
 int main(int argc, char *argv[]) {
@@ -44,6 +45,7 @@ int main(int argc, char *argv[]) {
     // Extract values from the JSON object
     std::string ip = config["defaults"]["ip"];
     int port = config["defaults"]["port"];
+    int universes_per_layer = absl::GetFlag(FLAGS_universes_per_layer);
     std::string geometry_str = config["cube_geometry"];
 
     std::vector<glm::vec3> cube_positions;
@@ -52,7 +54,6 @@ int main(int argc, char *argv[]) {
     }
 
     // You can make these configurable in the JSON file as well if needed
-    int universes_per_layer = 6;
     int layer_span = absl::GetFlag(FLAGS_layer_span);
     float alpha = absl::GetFlag(FLAGS_alpha);
     std::string rotate_rate_str = absl::GetFlag(FLAGS_rotate_rate);
