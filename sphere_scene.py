@@ -86,7 +86,7 @@ class Sphere:
         distance = math.sqrt(dx * dx + dy * dy + dz * dz)
 
         # Check if spheres are overlapping
-        if distance < self.radius + other.radius:
+        if distance < self.radius + other.radius and distance > 0:
             # Normal vector of the collision
             nx = dx / distance
             ny = dy / distance
@@ -138,32 +138,28 @@ class Sphere:
 
 class BouncingSphereScene(Scene):
 
-    RENDER_FADE_MARGIN = 0.2  # Fade out near the edge
+    RENDER_FADE_MARGIN = 0.2
 
     def __init__(self, **kwargs):
-        """
-        Initializes the scene using a configuration dictionary.
-
-        Args:
-            config (dict): A dictionary containing scene settings, including
-                           the total width, height, and length of the
-                           volumetric display space.
-        """
         properties = kwargs.get("properties")
         if not properties:
-            raise ValueError(
-                "BouncingSphereScene requires a 'properties' object with display dimensions."
-            )
+            raise ValueError("BouncingSphereScene requires a 'properties' object.")
 
         self.spheres: List[Sphere] = []
         self.next_spawn = 0.0
-        self.spawn_interval = 2.0  # New sphere every 2 seconds
-
-        # Read the total dimensions of the scene from the config
+        self.spawn_interval = 2.0
         self.width = properties.width
         self.height = properties.height
         self.length = properties.length
         self.bounds = (self.width, self.height, self.length)
+
+        # For debug tracking
+        self.last_debug_time = 0
+
+        # Debug: Print initialization info
+        print(
+            f"BouncingSphereScene initialized with bounds: {self.width}x{self.height}x{self.length}"
+        )
 
     def spawn_sphere(self, time: float) -> Sphere:
         """Spawns a new sphere within the scene's total bounds."""
@@ -186,6 +182,10 @@ class BouncingSphereScene(Scene):
         color = RGB.from_hsv(HSV(random.randint(0, 255), 255, 255))
         mass = radius**3
 
+        # Debug: Print spawn info with color
+        # print(f"Spawning sphere at ({x:.1f}, {y:.1f}, {z:.1f})
+        # radius={radius:.1f} color=RGB({color.red},{color.green},{color.blue})")
+
         return Sphere(
             x=x,
             y=y,
@@ -202,80 +202,110 @@ class BouncingSphereScene(Scene):
 
     def render(self, raster: Raster, time: float):
         """
-        Updates physics and renders spheres onto a single large raster.
-
-        Args:
-            raster (Raster): The single "world" raster to draw on.
-            time (float): The current animation time.
+        Updates physics and renders spheres using high-performance NumPy operations.
         """
-        # --- Setup ---
-        dt = 0.01  # Smaller timestep for stable physics
-        black = RGB(0, 0, 0)
-        for i in range(len(raster.data)):
-            raster.data[i] = black
+        dt = 1.0 / 60.0  # Use a fixed timestep for stable physics
 
-        # --- Spawning ---
+        # Debug raster info on first frame
+        # if time < dt:
+        #    print(f"Raster shape: {raster.data.shape}")
+        #    print(f"Raster dtype: {raster.data.dtype}")
+        #    print(f"Raster dimensions: width={raster.width}, height={raster.height}, length={raster.length}")
+
+        # --- Fast Raster Clearing ---
+        raster.data.fill(0)
+
+        # --- Spawning & Physics ---
         if time >= self.next_spawn:
             self.spheres.append(self.spawn_sphere(time))
             self.next_spawn = time + self.spawn_interval
 
-        # --- Physics Update ---
-        # 1. Update positions and handle wall collisions
         for sphere in self.spheres:
             sphere.update(dt, self.bounds)
 
-        # 2. Handle inter-sphere collisions
         for i, sphere1 in enumerate(self.spheres):
             for sphere2 in self.spheres[i + 1 :]:
                 sphere1.collide_with(sphere2)
 
-        # 3. Remove dead spheres
         self.spheres = [s for s in self.spheres if not s.is_expired(time)]
 
-        # --- Rendering ---
+        # Track total lit voxels for debugging
+        total_lit_voxels = 0
+        spheres_rendered = 0
+
+        # --- Simple per-voxel rendering (avoiding complex numpy indexing) ---
         for sphere in self.spheres:
             current_radius = sphere.get_current_radius(time)
-            if current_radius <= 0:
+            if current_radius <= 0.1:
                 continue
 
-            # Bounding box for the sphere
-            min_x = int(sphere.x - current_radius)
-            max_x = int(sphere.x + current_radius + 1)
-            min_y = int(sphere.y - current_radius)
-            max_y = int(sphere.y + current_radius + 1)
-            min_z = int(sphere.z - current_radius)
-            max_z = int(sphere.z + current_radius + 1)
+            spheres_rendered += 1
 
-            # Iterate over the bounding box, clamped to the raster's dimensions
-            for z in range(max(0, min_z), min(raster.length, max_z)):
-                for y in range(max(0, min_y), min(raster.height, max_y)):
-                    for x in range(max(0, min_x), min(raster.width, max_x)):
-                        # Check if this voxel is inside the sphere's radius
-                        distance_sq = (
-                            (x - sphere.x) ** 2 + (y - sphere.y) ** 2 + (z - sphere.z) ** 2
-                        )
-                        if distance_sq > current_radius**2:
-                            continue
+            # Determine bounding box for this sphere
+            x_min = max(0, int(sphere.x - current_radius))
+            x_max = min(raster.width - 1, int(sphere.x + current_radius))
+            y_min = max(0, int(sphere.y - current_radius))
+            y_max = min(raster.height - 1, int(sphere.y + current_radius))
+            z_min = max(0, int(sphere.z - current_radius))
+            z_max = min(raster.length - 1, int(sphere.z + current_radius))
 
-                        # Simplified logic: just calculate index and draw
-                        idx = z * raster.height * raster.width + y * raster.width + x
+            # Debug first sphere's bounds
+            # if spheres_rendered == 1 and time - self.last_debug_time > 2.0:
+            #    print(f"  Sphere bounds: x[{x_min},{x_max}] y[{y_min},{y_max}] z[{z_min},{z_max}]")
 
-                        # Calculate light intensity for a soft-edge effect
-                        distance = math.sqrt(distance_sq)
-                        intensity_margin = current_radius * self.RENDER_FADE_MARGIN
-                        if distance < current_radius - intensity_margin:
+            # Iterate through the bounding box
+            for z in range(z_min, z_max + 1):
+                for y in range(y_min, y_max + 1):
+                    for x in range(x_min, x_max + 1):
+                        # Calculate distance from voxel to sphere center
+                        dx = x - sphere.x
+                        dy = y - sphere.y
+                        dz = z - sphere.z
+                        distance = math.sqrt(dx * dx + dy * dy + dz * dz)
+
+                        # Check if voxel is inside sphere
+                        if distance <= current_radius:
+                            # Calculate intensity (fade at edges)
                             intensity = 1.0
-                        else:
-                            intensity = (
-                                1.0
-                                - (distance - (current_radius - intensity_margin))
-                                / intensity_margin
-                            )
+                            fade_start = current_radius * (1.0 - self.RENDER_FADE_MARGIN)
+                            if distance > fade_start:
+                                intensity = 1.0 - (distance - fade_start) / (
+                                    current_radius * self.RENDER_FADE_MARGIN
+                                )
 
-                        # Blend with existing color using the max rule
-                        existing = raster.data[idx]
-                        raster.data[idx] = RGB(
-                            max(existing.red, int(sphere.color.red * intensity)),
-                            max(existing.green, int(sphere.color.green * intensity)),
-                            max(existing.blue, int(sphere.color.blue * intensity)),
-                        )
+                            # Apply color with intensity
+                            new_r = int(sphere.color.red * intensity)
+                            new_g = int(sphere.color.green * intensity)
+                            new_b = int(sphere.color.blue * intensity)
+
+                            # Use maximum blending
+                            raster.data[z, y, x, 0] = max(raster.data[z, y, x, 0], new_r)
+                            raster.data[z, y, x, 1] = max(raster.data[z, y, x, 1], new_g)
+                            raster.data[z, y, x, 2] = max(raster.data[z, y, x, 2], new_b)
+
+                            total_lit_voxels += 1
+
+        # Debug output every 2 seconds
+        """
+        if time - self.last_debug_time > 2.0:
+            # Check actual raster data
+            non_zero_voxels = np.sum(np.any(raster.data > 0, axis=-1))
+            max_brightness = np.max(raster.data)
+            mean_brightness = np.mean(raster.data[raster.data > 0]) if non_zero_voxels > 0 else 0
+
+            print(f"[{time:.1f}s] Spheres: {len(self.spheres)} | Rendered: {spheres_rendered} | "
+                  f"Lit voxels: {non_zero_voxels}/{raster.width*raster.height*raster.length} | "
+                  f"Max brightness: {max_brightness} | Mean brightness: {mean_brightness:.1f}")
+
+            # Sample a few lit voxels to see actual values
+            if non_zero_voxels > 0:
+                lit_positions = np.argwhere(np.any(raster.data > 0, axis=-1))
+                if len(lit_positions) > 0:
+                    sample_idx = min(3, len(lit_positions))
+                    for i in range(sample_idx):
+                        z, y, x = lit_positions[i]
+                        color = raster.data[z, y, x]
+                        print(f"  Sample voxel at ({x},{y},{z}): RGB({color[0]},{color[1]},{color[2]})")
+
+            self.last_debug_time = time
+        """

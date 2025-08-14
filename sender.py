@@ -1,8 +1,9 @@
 import argparse
 import dataclasses
 import json
-import math
 import time
+
+import numpy as np
 
 from artnet import RGB, ArtNetController, DisplayProperties, Raster, Scene, load_scene
 
@@ -84,24 +85,41 @@ def create_default_scene():
     """Creates a built-in default scene with the original wave pattern"""
 
     class WaveScene(Scene):
-        def __init__(self, config=None):
-            pass  # No config needed for this simple scene
+        def __init__(self, **kwargs):
+            # We will create these grids once, then reuse them
+            self.x_coords, self.y_coords, self.z_coords = (None, None, None)
 
-        def render(self, raster, time):
-            for y in range(raster.height):
-                for x in range(raster.width):
-                    for z in range(raster.length):
-                        # Calculate color
-                        red = int(
-                            127 * math.sin(0.5 * math.sin(time * 5) * x + z * 0.2 + time * 10) + 128
-                        )
-                        green = int(127 * math.cos((time * 4) * y + z * 0.2 + time * 10) + 128)
-                        blue = int(
-                            127 * math.sin(0.5 * math.sin(time * 3) * (x + y + z) + time * 10) + 128
-                        )
+        def render(self, raster: Raster, time: float):
+            # One-time setup to create coordinate grids that match the raster size
+            if self.x_coords is None or self.x_coords.shape != (
+                raster.length,
+                raster.height,
+                raster.width,
+            ):
+                # np.indices creates 3D arrays representing the x, y, and z coordinate of each voxel
+                self.z_coords, self.y_coords, self.x_coords = np.indices(
+                    (raster.length, raster.height, raster.width), sparse=True
+                )
 
-                        # Set pixel color using set_pix
-                        raster.set_pix(x, y, z, RGB(red, green, blue))
+            # Perform all math operations on the entire arrays at once.
+            red = (
+                127
+                * np.sin(0.5 * np.sin(time * 5) * self.x_coords + self.z_coords * 0.2 + time * 10)
+                + 128
+            )
+            green = 127 * np.cos((time * 4) * self.y_coords + self.z_coords * 0.2 + time * 10) + 128
+            blue = (
+                127
+                * np.sin(
+                    0.5 * np.sin(time * 3) * (self.x_coords + self.y_coords + self.z_coords)
+                    + time * 10
+                )
+                + 128
+            )
+
+            # Assign the calculated color channels directly to the raster's NumPy data buffer.
+            # np.stack combines the three separate color arrays into one (L, H, W, 3) array.
+            raster.data[:] = np.stack([red, green, blue], axis=-1).astype(np.uint8)
 
     return WaveScene()
 
@@ -174,13 +192,24 @@ def main():
             print(f"🎮 Connected {len(scene.input_handler.controllers)} game controllers")
 
         # --- Main Rendering and Transmission Loop ---
+        TARGET_FPS = 60.0
+        FRAME_DURATION = 1.0 / TARGET_FPS
+
+        # ⏱️ PROFILING: Setup for logging performance stats
+        frame_count = 0
+        last_log_time = time.monotonic()
+
         print("🔁 Starting main loop...")
         start_time = time.monotonic()
         while True:
-            current_time = time.monotonic() - start_time
+            t_loop_start = time.monotonic()
+
+            frame_start_time = time.monotonic()
+            current_time = frame_start_time - start_time
 
             # A. SCENE RENDER: The active scene draws on the single large world_raster.
             scene.render(world_raster, current_time)
+            t_render_done = time.monotonic()
 
             # B. SLICE: Copy data from the world raster to each cube's individual raster.
             processed_cubes = set()
@@ -189,36 +218,41 @@ def main():
 
                 # This check ensures we only slice a cube's data once per frame,
                 # even if it has multiple ArtNet mappings.
-                if (
-                    not hasattr(job["cube_raster"], "frame_sliced")
-                    or job["cube_raster"].frame_sliced != current_time
-                ):
+                if cube_pos_tuple not in processed_cubes:
                     start_x = job["cube_position"][0] - min_coord[0]
                     start_y = job["cube_position"][1] - min_coord[1]
                     start_z = job["cube_position"][2] - min_coord[2]
 
                     # Get a reference to the destination raster for clarity
                     cube_raster = job["cube_raster"]
-
                     world_slice = world_raster.data[
                         start_z : start_z + cube_raster.length,
                         start_y : start_y + cube_raster.height,
                         start_x : start_x + cube_raster.width,
                     ]
                     cube_raster.data[:] = world_slice
-
                     processed_cubes.add(cube_pos_tuple)
+            t_slice_done = time.monotonic()
 
             # C. SEND: Iterate through all jobs and send the specified Z-layers.
+            conversion_cache = {}
             for job in artnet_manager.send_jobs:
                 # Get the original raster with its NumPy data
                 cube_raster = job["cube_raster"]
-                temp_raster = dataclasses.replace(cube_raster)
+                raster_id = id(cube_raster)
 
                 # Convert the NumPy array into the Python list of RGB objects
                 # that the Rust library expects.
-                numpy_data = cube_raster.data.reshape(-1, 3)  # Flatten to (num_pixels, 3)
-                temp_raster.data = [RGB(int(r), int(g), int(b)) for r, g, b in numpy_data]
+                if raster_id not in conversion_cache:
+                    # If not in cache, do the expensive conversion and store it
+                    numpy_data = cube_raster.data.reshape(-1, 3)
+                    conversion_cache[raster_id] = [
+                        RGB(int(r), int(g), int(b)) for r, g, b in numpy_data
+                    ]
+
+                # Create a temporary raster with the (now cached) Python list
+                temp_raster = dataclasses.replace(cube_raster)
+                temp_raster.data = conversion_cache[raster_id]
 
                 universes_per_layer = 3
                 base_universe_offset = min(job["z_indices"]) * universes_per_layer
@@ -232,8 +266,34 @@ def main():
                     universes_per_layer=universes_per_layer,
                     channel_span=1,
                 )
+            t_send_done = time.monotonic()
 
-            time.sleep(1 / 30.0)  # Target 30Hz
+            # ⏱️ PROFILING: Log stats every second
+            frame_count += 1
+            """
+            if t_send_done - last_log_time > 1.0:
+                fps = frame_count / (t_send_done - last_log_time)
+                render_ms = (t_render_done - t_loop_start) * 1000
+                slice_ms = (t_slice_done - t_render_done) * 1000
+                send_ms = (t_send_done - t_slice_done) * 1000
+                total_ms = (t_send_done - t_loop_start) * 1000
+
+                print(
+                    f"FPS: {fps:<5.1f} | "
+                    f"Total: {total_ms:<5.1f}ms | "
+                    f"Render: {render_ms:<5.1f}ms | "
+                    f"Slice: {slice_ms:<5.1f}ms | "
+                    f"Send: {send_ms:<5.1f}ms"
+                )
+
+                frame_count = 0
+                last_log_time = t_send_done
+            """
+
+            elapsed_time = time.monotonic() - frame_start_time
+            sleep_time = FRAME_DURATION - elapsed_time
+            if sleep_time > 0:
+                time.sleep(sleep_time)
 
     except (ImportError, ValueError) as e:
         print(f"Error loading scene: {e}")
