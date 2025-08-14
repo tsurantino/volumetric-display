@@ -46,6 +46,7 @@ cc_binary(
         "@abseil-cpp//absl/log:flags",
         "@abseil-cpp//absl/log:initialize",
         "@glm",
+        "@nlohmann_json//:json",
     ],
 )
 

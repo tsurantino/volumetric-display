@@ -9,9 +9,11 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtx/quaternion.hpp>
+#include <memory> // For std::unique_ptr
 #include <mutex>
 #include <thread>
 #include <vector>
+
 
 #include "color_correction.h"
 
@@ -22,7 +24,8 @@ class VolumetricDisplay {
 public:
   VolumetricDisplay(int width, int height, int length, const std::string &ip,
                     int port, int universes_per_layer, int layer_span,
-                    float alpha, const glm::vec3 &initial_rotation_rate, bool color_correction_enabled);
+                    float alpha, const glm::vec3 &initial_rotation_rate, bool color_correction_enabled,
+                    const std::vector<glm::vec3>& cube_positions, float voxel_scale);
   ~VolumetricDisplay();
 
   void run();
@@ -31,7 +34,7 @@ public:
 private:
   void setupOpenGL();
   void setupVBO();
-  void listenArtNet();
+  void listenArtNet(int cube_index, int listen_port);
   void updateColors();
   void render();
   void processInput(GLFWwindow *window);
@@ -45,7 +48,7 @@ private:
                    int mods);
   void framebufferSizeCallback(GLFWwindow *window, int width, int height);
   void updateCamera();
-  void drawWireframeCube();
+  void drawWireframeCubes();
   void drawAxes();
 
   // New shader methods
@@ -71,16 +74,19 @@ private:
   int port;
   int universes_per_layer;
   int layer_span;
+  std::vector<glm::vec3> cube_positions;
 
   std::mutex pixels_mu;
   std::condition_variable view_update;
   std::vector<std::array<unsigned char, 3>> pixels; // RGB for each voxel
   float alpha;
+  float voxel_scale;
   std::atomic<bool> running;
   bool show_axis;
   bool show_wireframe;
   std::atomic<bool> needs_update;
-  std::thread artnet_thread;
+
+  std::vector<std::thread> artnet_threads;
 
   GLuint vao;
   GLuint vbo_vertices;
@@ -107,7 +113,8 @@ private:
   glm::vec3 rotation_rate; // Degrees per second for X, Y, Z
 
   boost::asio::io_service io_service;
-  boost::asio::ip::udp::socket socket;
+  std::vector<std::unique_ptr<boost::asio::ip::udp::socket>> sockets;
+
 
   bool color_correction_enabled_;
   util::ReverseColorCorrector<3> color_corrector_{

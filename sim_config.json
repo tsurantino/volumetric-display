@@ -1,5 +1,19 @@
 {
-  "geometry": "20x20x20",
+  "defaults": {
+    "ip": "127.0.0.1",
+    "port": 6454
+  },
+  "cube_geometry": "20x20x20",
+  "cubes": [
+    { "position": [0, 0, 0] },
+    { "position": [20, 0, 0] },
+    { "position": [0, 20, 0] },
+    { "position": [0, 0, 20] },
+    { "position": [20, 20, 0] },
+    { "position": [20, 0, 20] },
+    { "position": [0, 20, 20] },
+    { "position": [20, 20, 20] }
+  ],
   "z_mapping": [
     {
       "ip": "127.0.0.1",
