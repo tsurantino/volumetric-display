@@ -171,9 +171,14 @@ def main():
 
     # --- Scene Loading ---
     try:
+        with open(args.config, "r") as f:
+            scene_config = json.load(f)
         scene = (
             load_scene(
-                args.scene, properties=display_props, control_port_manager=control_port_manager
+                args.scene,
+                properties=display_props,
+                scene_config=scene_config,
+                control_port_manager=control_port_manager,
             )
             if args.scene
             else create_default_scene()
@@ -189,6 +194,7 @@ def main():
             and scene.input_handler
             and scene.input_handler.initialized
         ):
+            game_controllers = len(scene.input_handler.controllers)
             print(f"🎮 Connected {len(scene.input_handler.controllers)} game controllers")
 
         # --- Main Rendering and Transmission Loop ---
