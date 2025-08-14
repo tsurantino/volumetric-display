@@ -214,7 +214,7 @@ def main():
                     base_universe=0,
                     raster=cube_raster,
                     channels_per_universe=510,
-                    universes_per_layer=6,
+                    universes_per_layer=3,
                     channel_span=1,
                     z_indices=list(range(display_config.length)),
                 )
