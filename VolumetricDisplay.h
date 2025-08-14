@@ -8,117 +8,106 @@
 #include <boost/asio.hpp>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
-#include <glm/gtx/quaternion.hpp>
-#include <memory> // For std::unique_ptr
+#include <glm/gtc/quaternion.hpp>
+#include <memory>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
 
-
+#include "DisplayConfig.h"
 #include "color_correction.h"
 
-// Define the maximum universes per layer
-constexpr int MAX_UNIVERSES_PER_LAYER = 10;
+struct VoxelColor { unsigned char r, g, b; };
+
+struct ListenerThreadInfo {
+    std::string ip;
+    int port;
+    int cube_index;
+};
 
 class VolumetricDisplay {
 public:
-  VolumetricDisplay(int width, int height, int length, const std::string &ip,
-                    int port, int universes_per_layer, int layer_span,
-                    float alpha, const glm::vec3 &initial_rotation_rate, bool color_correction_enabled,
-                    const std::vector<glm::vec3>& cube_positions, float voxel_scale);
-  ~VolumetricDisplay();
-
-  void run();
-  void cleanup();
+    VolumetricDisplay(int width, int height, int length,
+                      int universes_per_layer, int layer_span, float alpha,
+                      const glm::vec3& initial_rotation_rate, bool color_correction_enabled,
+                      const std::vector<CubeConfig>& cubes_config,
+                      float voxel_scale);
+    ~VolumetricDisplay();
+    void run();
 
 private:
-  void setupOpenGL();
-  void setupVBO();
-  void listenArtNet(int cube_index, int listen_port);
-  void updateColors();
-  void render();
-  void processInput(GLFWwindow *window);
-  void windowCloseCallback(GLFWwindow *window);
-  void mouseButtonCallback(GLFWwindow *window, int button, int action,
-                           int mods);
-  void cursorPositionCallback(GLFWwindow *window, double xpos, double ypos);
-  void scrollCallback(GLFWwindow *window, double xoffset, double yoffset);
-  void rotate(float angle, float x, float y, float z);
-  void keyCallback(GLFWwindow *window, int key, int scancode, int action,
-                   int mods);
-  void framebufferSizeCallback(GLFWwindow *window, int width, int height);
-  void updateCamera();
-  void drawWireframeCubes();
-  void drawAxes();
+    // Setup & Cleanup
+    void setupOpenGL();
+    void setupShaders();
+    void setupWireframeShader();
+    void setupAxesShader();
+    void setupVBO();
+    void cleanup();
 
-  // New shader methods
-  void setupShaders();
-  void setupWireframeShader();
-  void setupAxesShader();
-  GLuint compileShader(GLenum type, const char* source);
+    // FIX: Declaration added for this utility function.
+    GLuint compileShader(GLenum type, const char* source);
 
-  glm::vec3 camera_position;
-  glm::quat camera_orientation;
-  float camera_distance;
-  bool left_mouse_button_pressed;
-  bool right_mouse_button_pressed;
-  double last_mouse_x;
-  double last_mouse_y;
+    // Main Loop & Rendering Helpers
+    void render();
+    void updateColors();
+    void drawWireframeCubes();
+    void drawAxes();
+    void rotate(float angle, float x, float y, float z);
 
-  double last_frame_time = 0.0;
+    // Networking
+    void listenArtNet(int listener_index);
 
-  int viewport_width, viewport_height;
-  float viewport_aspect = 1.0f;
-  int width, height, length;
-  std::string ip;
-  int port;
-  int universes_per_layer;
-  int layer_span;
-  std::vector<glm::vec3> cube_positions;
+    // GLFW Callbacks (must be static)
+    void framebufferSizeCallback(GLFWwindow* window, int width, int height);
+    void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods);
+    void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods);
+    void cursorPositionCallback(GLFWwindow* window, double xpos, double ypos);
+    void scrollCallback(GLFWwindow* window, double xoffset, double yoffset);
+    void windowCloseCallback(GLFWwindow* window);
 
-  std::mutex pixels_mu;
-  std::condition_variable view_update;
-  std::vector<std::array<unsigned char, 3>> pixels; // RGB for each voxel
-  float alpha;
-  float voxel_scale;
-  std::atomic<bool> running;
-  bool show_axis;
-  bool show_wireframe;
-  std::atomic<bool> needs_update;
+    // Member Variables
+    GLFWwindow* window_;
+    int width, height, length;
+    int universes_per_layer, layer_span;
+    size_t num_voxels;
 
-  std::vector<std::thread> artnet_threads;
+    GLuint vao, vbo_vertices, vbo_indices, vbo_instance_positions, vbo_instance_colors;
+    GLuint wireframe_vao, wireframe_vbo, wireframe_ebo;
+    GLuint axis_vao, axis_vbo;
+    GLuint shader_program, wireframe_shader_program, axis_shader_program;
+    size_t vertex_count;
+    float alpha, voxel_scale;
+    bool show_axis = false;
+    bool show_wireframe = false;
+    std::atomic<bool> needs_update;
 
-  GLuint vao;
-  GLuint vbo_vertices;
-  GLuint vbo_indices;
-  GLuint vbo_instance_positions;
-  GLuint vbo_instance_colors;
-  GLuint wireframe_vao;
-  GLuint wireframe_vbo;
-  GLuint wireframe_ebo;
+    glm::vec3 camera_position{0.0f, 0.0f, 0.0f};
+    glm::mat4 rotation_matrix;
+    glm::mat4 temp_matrix;
+    glm::vec3 rotation_rate;
+    glm::quat camera_orientation;
+    float camera_distance;
+    bool left_mouse_button_pressed = false;
+    bool right_mouse_button_pressed = false;
+    double last_mouse_x, last_mouse_y;
+    int viewport_width, viewport_height;
+    float viewport_aspect = 1.0f;
+    double last_frame_time = 0.0;
 
-  GLuint axis_vao;
-  GLuint axis_vbo;
+    std::atomic<bool> running;
+    std::mutex pixels_mu;
+    std::condition_variable view_update;
+    std::vector<VoxelColor> pixels;
 
-  size_t vertex_count;
-  size_t num_voxels;
+    boost::asio::io_service io_service;
+    std::vector<std::thread> artnet_threads;
+    std::vector<std::unique_ptr<boost::asio::ip::udp::socket>> sockets;
+    std::vector<CubeConfig> cubes_config_;
+    std::vector<ListenerThreadInfo> listener_info_;
 
-  // Shader program
-  GLuint shader_program;
-  GLuint wireframe_shader_program;
-  GLuint axis_shader_program;
-
-  glm::mat4 rotation_matrix;
-  glm::mat4 temp_matrix;
-  glm::vec3 rotation_rate; // Degrees per second for X, Y, Z
-
-  boost::asio::io_service io_service;
-  std::vector<std::unique_ptr<boost::asio::ip::udp::socket>> sockets;
-
-
-  bool color_correction_enabled_;
-  util::ReverseColorCorrector<3> color_corrector_{
-      util::kColorCorrectorWs2812bOptions};
+    bool color_correction_enabled_;
+    util::ReverseColorCorrector<3> color_corrector_{util::kColorCorrectorWs2812bOptions};
 };
 
 #endif // VOLUMETRIC_DISPLAY_H

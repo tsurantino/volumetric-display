@@ -1,4 +1,5 @@
 #include "VolumetricDisplay.h"
+#include "DisplayConfig.h"
 #include "absl/flags/flag.h"
 #include "absl/flags/parse.h"
 #include "absl/log/log.h"
@@ -43,29 +44,48 @@ int main(int argc, char *argv[]) {
     config_file >> config;
 
     // Extract values from the JSON object
-    std::string ip = config["defaults"]["ip"];
-    int port = config["defaults"]["port"];
-    int universes_per_layer = absl::GetFlag(FLAGS_universes_per_layer);
-    std::string geometry_str = config["cube_geometry"];
-
-    std::vector<glm::vec3> cube_positions;
-    for (const auto& cube : config["cubes"]) {
-        cube_positions.push_back(glm::vec3(cube["position"][0], cube["position"][1], cube["position"][2]));
-    }
-
-    // You can make these configurable in the JSON file as well if needed
-    int layer_span = absl::GetFlag(FLAGS_layer_span);
-    float alpha = absl::GetFlag(FLAGS_alpha);
-    std::string rotate_rate_str = absl::GetFlag(FLAGS_rotate_rate);
 
     // Parse geometry dimensions
+    std::string geometry_str = config["cube_geometry"];
     int width, height, length;
     if (sscanf(geometry_str.c_str(), "%dx%dx%d", &width, &height, &length) != 3) {
       throw std::runtime_error(
           "Invalid geometry format in config. Use WIDTHxHEIGHTxLENGTH (e.g., 20x20x20).");
     }
 
-    // Parse rotation rate from flags (or move to JSON as well)
+    // Cube configs & artnet mappings
+    std::vector<CubeConfig> cube_configs;
+        for (const auto& cube_json : config["cubes"]) {
+            CubeConfig current_cube;
+            current_cube.position = glm::vec3(cube_json["position"][0], cube_json["position"][1], cube_json["position"][2]);
+
+            for (const auto& mapping_json : cube_json["artnet_mappings"]) {
+                ArtNetListenerConfig listener;
+                listener.ip = mapping_json["ip"];
+                // The port might be a string in JSON, so we handle it safely
+                if (mapping_json["port"].is_string()) {
+                    listener.port = std::stoi(mapping_json["port"].get<std::string>());
+                } else {
+                    listener.port = mapping_json["port"];
+                }
+                current_cube.listeners.push_back(listener);
+            }
+            cube_configs.push_back(current_cube);
+        }
+
+        if (cube_configs.empty()) {
+            throw std::runtime_error("No cubes defined in the configuration file.");
+        }
+
+    // Other flags
+    int universes_per_layer = absl::GetFlag(FLAGS_universes_per_layer);
+    int layer_span = absl::GetFlag(FLAGS_layer_span);
+    float alpha = absl::GetFlag(FLAGS_alpha);
+    std::string rotate_rate_str = absl::GetFlag(FLAGS_rotate_rate);
+    const bool color_correction_enabled = absl::GetFlag(FLAGS_color_correction);
+    float voxel_scale = absl::GetFlag(FLAGS_voxel_scale);
+
+    // Rotation rate
     glm::vec3 rotation_rate(0.0f);
     std::stringstream ss(rotate_rate_str);
     std::string segment;
@@ -76,22 +96,15 @@ int main(int argc, char *argv[]) {
 
     LOG(INFO) << "Starting Volumetric Display with the following parameters:";
     LOG(INFO) << "Cube Geometry: " << width << "x" << height << "x" << length;
-    LOG(INFO) << "Number of Cubes: " << cube_positions.size();
-    LOG(INFO) << "IP: " << ip;
-    LOG(INFO) << "Port: " << port;
-
-    const bool color_correction_enabled = absl::GetFlag(FLAGS_color_correction);
-    float voxel_scale = absl::GetFlag(FLAGS_voxel_scale);
+    LOG(INFO) << "Number of Cubes: " << cube_configs.size();
 
     // Create and run the volumetric display with the new parameters
-    VolumetricDisplay display(width, height, length, ip, port,
-                              universes_per_layer, layer_span, alpha,
-                              rotation_rate, color_correction_enabled,
-                              cube_positions, voxel_scale);
+    VolumetricDisplay display(width, height, length, universes_per_layer,
+                                      layer_span, alpha, rotation_rate,
+                                      color_correction_enabled, cube_configs, voxel_scale);
 
-    // Configure icon
+    // Configure icon and run
     SetIcon(argv[0]);
-
     display.run();
 
   } catch (const json::parse_error& e) {

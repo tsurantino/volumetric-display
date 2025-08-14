@@ -4,17 +4,10 @@
 #include <GLFW/glfw3.h>
 #include <algorithm>
 #include <array>
-#include <atomic>
-#include <boost/asio.hpp>
-#include <glm/glm.hpp>
-#include <glm/gtc/matrix_transform.hpp>
+#include <arpa/inet.h>
 #include <glm/gtc/type_ptr.hpp>
+#include <glm/gtx/quaternion.hpp>
 #include <stdexcept>
-#include <string>
-#include <thread>
-#include <vector>
-
-#include "color_correction.h"
 
 // Voxel Shaders
 const char* vertex_shader_source = R"glsl(
@@ -108,58 +101,66 @@ const char* simple_fragment_shader_source = R"glsl(
 )glsl";
 
 VolumetricDisplay::VolumetricDisplay(int width, int height, int length,
-                                     const std::string &ip, int port,
                                      int universes_per_layer, int layer_span,
                                      float alpha,
                                      const glm::vec3 &initial_rotation_rate, bool color_correction_enabled,
-                                     const std::vector<glm::vec3>& cube_positions, float voxel_scale) // Add parameter
-    : left_mouse_button_pressed(false), right_mouse_button_pressed(false),
-      width(width), height(height), length(length), ip(ip), port(port),
+                                     const std::vector<CubeConfig>& cubes_config,
+                                     float voxel_scale)
+    : width(width), height(height), length(length),
       universes_per_layer(universes_per_layer), layer_span(layer_span),
-      cube_positions(cube_positions),
-      pixels(),
-      alpha(alpha),
-      voxel_scale(voxel_scale), // Initialize member
-      running(false), show_axis(false),
-      show_wireframe(false), needs_update(false),
-      rotation_rate(initial_rotation_rate),
-      color_correction_enabled_(color_correction_enabled) {
+      alpha(alpha), voxel_scale(voxel_scale), rotation_rate(initial_rotation_rate),
+      running(false), show_axis(false), show_wireframe(false), needs_update(false),
+      color_correction_enabled_(color_correction_enabled),
+      cubes_config_(cubes_config), pixels() {
 
-  if (universes_per_layer > MAX_UNIVERSES_PER_LAYER) {
-    throw std::runtime_error("Layer size too large for ArtNet limitations");
-  }
+    if (cubes_config_.empty()) {
+        throw std::runtime_error("Cube configuration cannot be empty.");
+    }
 
-  size_t pixels_per_cube = width * height * (length / layer_span);
-  pixels.resize(pixels_per_cube * cube_positions.size(), {0, 0, 0});
+    num_voxels = static_cast<size_t>(width) * height * (length / layer_span) * cubes_config_.size();
+    pixels.resize(num_voxels, {0, 0, 0});
 
-  running = true;
-  rotation_matrix = glm::mat4(1.0f);
-  temp_matrix = glm::mat4(1.0f);
+    running = true;
+    rotation_matrix = glm::mat4(1.0f);
+    temp_matrix = glm::mat4(1.0f);
 
-  setupOpenGL();
-  camera_position = glm::vec3(0.0f, 0.0f, 0.0f);
+    setupOpenGL();
 
-  glm::quat rot_x = glm::angleAxis(glm::radians(45.0f), glm::vec3(1.0f, 0.0f, 0.0f));
-  glm::quat rot_y = glm::angleAxis(glm::radians(-35.0f), glm::vec3(0.0f, 1.0f, 0.0f));
-  camera_orientation = rot_y * rot_x;
-  camera_distance = std::max({(float)width, (float)height, (float)length}) * 3.0f;
-  last_mouse_x = 0.0;
-  last_mouse_y = 0.0;
+    glm::quat rot_x = glm::angleAxis(glm::radians(45.0f), glm::vec3(1.0f, 0.0f, 0.0f));
+    glm::quat rot_y = glm::angleAxis(glm::radians(-35.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    camera_orientation = rot_y * rot_x;
+    camera_distance = std::max({(float)width, (float)height, (float)length}) * 3.0f;
+    last_mouse_x = 0.0;
+    last_mouse_y = 0.0;
 
-  setupShaders();
-  setupWireframeShader();
-  setupAxesShader();
-  setupVBO();
+    setupShaders();
+    setupWireframeShader();
+    setupAxesShader();
+    setupVBO();
 
-  for (size_t i = 0; i < cube_positions.size(); ++i) {
-    int listen_port = port + i;
-    auto socket = std::make_unique<boost::asio::ip::udp::socket>(io_service);
-    socket->open(boost::asio::ip::udp::v4());
-    socket->bind(boost::asio::ip::udp::endpoint(boost::asio::ip::address::from_string(ip), listen_port));
-    sockets.push_back(std::move(socket));
-    artnet_threads.emplace_back(&VolumetricDisplay::listenArtNet, this, i, listen_port);
-  }
+    LOG(INFO) << "Initializing " << listener_info_.size() << " Art-Net listener threads...";
+    for (size_t i = 0; i < cubes_config_.size(); ++i) {
+        for (const auto& listener_cfg : cubes_config_[i].listeners) {
+            listener_info_.push_back({listener_cfg.ip, listener_cfg.port, static_cast<int>(i)});
+        }
+    }
+
+    for (size_t i = 0; i < listener_info_.size(); ++i) {
+        const auto& info = listener_info_[i];
+        try {
+            auto socket = std::make_unique<boost::asio::ip::udp::socket>(io_service);
+            socket->open(boost::asio::ip::udp::v4());
+            //socket->set_option(boost::asio::ip::udp::socket::reuse_address(true));
+            socket->bind(boost::asio::ip::udp::endpoint(boost::asio::ip::address::from_string(info.ip), info.port));
+            sockets.push_back(std::move(socket));
+            artnet_threads.emplace_back(&VolumetricDisplay::listenArtNet, this, i);
+        } catch (const boost::system::system_error& e) {
+            LOG(FATAL) << "Failed to bind socket to " << info.ip << ":" << info.port << " - " << e.what();
+            throw;
+        }
+    }
 }
+
 
 VolumetricDisplay::~VolumetricDisplay() { cleanup(); }
 
@@ -243,10 +244,10 @@ void VolumetricDisplay::drawWireframeCubes() {
 
     glBindVertexArray(wireframe_vao);
 
-    for (const auto& pos : cube_positions) {
+    for (const auto& cube_cfg : cubes_config_) {
         glm::mat4 scale_matrix = glm::scale(glm::mat4(1.0f), glm::vec3(width, height, length));
         glm::vec3 center_offset(width / 2.0f, height / 2.0f, length / 2.0f);
-        glm::mat4 trans_matrix = glm::translate(glm::mat4(1.0f), pos + center_offset);
+        glm::mat4 trans_matrix = glm::translate(glm::mat4(1.0f), cube_cfg.position + center_offset); // Center the wireframe
 
         glm::mat4 model = trans_matrix * scale_matrix;
 
@@ -300,7 +301,6 @@ void VolumetricDisplay::setupOpenGL() {
       throw std::runtime_error("Failed to initialize GLEW");
   }
 
-
   glfwSetWindowUserPointer(window, this);
   glfwSetWindowCloseCallback(window, [](GLFWwindow *window) {
     static_cast<VolumetricDisplay *>(glfwGetWindowUserPointer(window))
@@ -346,7 +346,7 @@ void VolumetricDisplay::setupOpenGL() {
 
 void VolumetricDisplay::setupVBO() {
     // VOXEL SETUP
-    num_voxels = width * height * (length / layer_span) * cube_positions.size();
+    num_voxels = static_cast<size_t>(width) * height * (length / layer_span) * cubes_config_.size();
 
     GLfloat vertices[] = {
         -0.5f, -0.5f,  0.5f, 0.5f, -0.5f,  0.5f, 0.5f,  0.5f,  0.5f, -0.5f,  0.5f,  0.5f,
@@ -360,13 +360,12 @@ void VolumetricDisplay::setupVBO() {
 
     std::vector<glm::vec3> instance_positions(num_voxels);
     size_t i = 0;
-    for (const auto& cube_pos : cube_positions) {
+    for (const auto& cube_cfg : cubes_config_) {
         for (int z = 0; z < length; z += layer_span) {
             for (int y = 0; y < height; ++y) {
                 for (int x = 0; x < width; ++x) {
                     if (i < num_voxels) {
-                        // Voxel center is at (x + 0.5, y + 0.5, z + 0.5)
-                        instance_positions[i++] = glm::vec3(x + 0.5f, y + 0.5f, z + 0.5f) + cube_pos;
+                        instance_positions[i++] = glm::vec3(x + 0.5f, y + 0.5f, z + 0.5f) + cube_cfg.position;
                     }
                 }
             }
@@ -460,81 +459,93 @@ void VolumetricDisplay::setupVBO() {
     glBindVertexArray(0);
 }
 
-void VolumetricDisplay::listenArtNet(int cube_index, int listen_port) {
-  LOG(INFO) << "Listening for Art-Net for cube " << cube_index << " on " << ip << ":" << listen_port;
-  size_t pixels_per_cube = width * height * (length / layer_span);
-  size_t pixel_buffer_offset = cube_index * pixels_per_cube;
+void VolumetricDisplay::listenArtNet(int listener_index) {
+    // This thread is responsible for ONE specific socket (IP:Port).
+    // It looks up its own configuration using its index.
+    const auto& info = listener_info_[listener_index];
+    LOG(INFO) << "Thread started for cube " << info.cube_index << " on " << info.ip << ":" << info.port;
 
-  while (running) {
-    std::array<char, 1024> buffer;
-    boost::asio::ip::udp::endpoint sender_endpoint;
-    boost::system::error_code ec;
+    // This listener only ever writes to the pixel buffer for its assigned cube.
+    size_t pixels_per_cube = static_cast<size_t>(width) * height * length;
+    size_t pixel_buffer_offset = static_cast<size_t>(info.cube_index) * pixels_per_cube;
 
-    size_t total_length = sockets[cube_index]->receive_from(boost::asio::buffer(buffer),
-                                              sender_endpoint, 0, ec);
+    while (running) {
+        std::array<char, 1024> buffer;
+        boost::asio::ip::udp::endpoint sender_endpoint;
+        boost::system::error_code ec;
 
-    if (ec == boost::asio::error::operation_aborted) {
-      break;
-    } else if (ec) {
-      if (!running) break;
-      LOG(ERROR) << "Error receiving data on port " << listen_port << ": " << ec.message();
-      break;
-    }
+        // Use the correct socket from the vector
+        size_t total_length = sockets[listener_index]->receive_from(boost::asio::buffer(buffer),
+                                                      sender_endpoint, 0, ec);
 
-    if (total_length < 18) continue;
-
-    if (strncmp(buffer.data(), "Art-Net\0", 8) != 0) continue;
-
-    uint16_t opcode = *reinterpret_cast<uint16_t *>(&buffer[8]);
-
-    if (opcode == 0x5000) { // DMX Data
-      uint16_t universe = *reinterpret_cast<uint16_t *>(&buffer[14]);
-      uint16_t length = ntohs(*reinterpret_cast<uint16_t *>(&buffer[16]));
-
-      int layer = universe / universes_per_layer;
-      int universe_in_layer = universe % universes_per_layer;
-      int start_pixel = universe_in_layer * (512 / 3);
-
-      auto lg = std::lock_guard(pixels_mu);
-      for (size_t i = 0; i < length; i += 3) {
-        int idx = start_pixel + i / 3;
-        int x = idx % width;
-        int y = idx / width;
-        size_t pixel_index =
-            pixel_buffer_offset + static_cast<size_t>(x + y * width + layer * width * height);
-        if (pixel_index < pixels.size()) {
-          pixels[pixel_index] = {(unsigned char)buffer[18 + i],
-                               (unsigned char)buffer[18 + i + 1],
-                               (unsigned char)buffer[18 + i + 2]};
+        if (ec == boost::asio::error::operation_aborted || !running) {
+            break; // Exit thread if socket is closed or app is shutting down
+        } else if (ec) {
+            LOG(ERROR) << "Receive error on " << info.ip << ":" << info.port << ": " << ec.message();
+            continue;
         }
-      }
-      view_update.notify_all();
+
+        if (total_length < 18 || strncmp(buffer.data(), "Art-Net\0", 8) != 0) {
+            continue; // Not a valid Art-Net packet
+        }
+
+        uint16_t opcode = *reinterpret_cast<uint16_t *>(&buffer[8]);
+        if (opcode == 0x5000) { // ArtDmx opcode
+            uint16_t universe = *reinterpret_cast<uint16_t *>(&buffer[14]);
+            uint16_t dmx_length = ntohs(*reinterpret_cast<uint16_t *>(&buffer[16]));
+            dmx_length = std::min(dmx_length, (uint16_t)512);
+
+            int layer = (universe / universes_per_layer) / layer_span;
+            int universe_in_layer = universe % universes_per_layer;
+            int start_pixel_in_layer = universe_in_layer * (170);
+
+            auto lg = std::lock_guard(pixels_mu);
+            for (size_t i = 0; i < dmx_length; i += 3) {
+                if (18 + i + 2 >= total_length) break;
+
+                int idx_in_layer = start_pixel_in_layer + i / 3;
+                int x = idx_in_layer % width;
+                int y = idx_in_layer / width;
+
+                size_t pixel_index = pixel_buffer_offset + static_cast<size_t>(x + y * width + layer * width * height);
+
+                if (pixel_index < pixels.size()) {
+                    pixels[pixel_index] = {
+                        (unsigned char)buffer[18 + i],
+                        (unsigned char)buffer[18 + i + 1],
+                        (unsigned char)buffer[18 + i + 2]
+                    };
+                }
+            }
+            view_update.notify_all();
+        }
     }
-  }
+    LOG(INFO) << "Thread stopped for " << info.ip << ":" << info.port;
 }
 
 void VolumetricDisplay::updateColors() {
-    // This is the performance fix. We no longer wait for the network thread.
-    // We just lock briefly to copy the data.
-    auto lg = std::lock_guard(pixels_mu);
-
     std::vector<glm::vec4> instance_colors(num_voxels);
+    {
+        auto lg = std::lock_guard(pixels_mu);
+        for (size_t i = 0; i < num_voxels; ++i) {
+            VoxelColor pixel = pixels[i]; // Make a copy
 
-    for (size_t i = 0; i < num_voxels; ++i) {
-        auto pixel = pixels[i]; // Make a copy
-        if (color_correction_enabled_) {
-            color_corrector_.ReverseCorrectInPlace(pixel.data());
+            if (color_correction_enabled_) {
+                // Create a temporary array for the corrector to modify.
+                std::array<unsigned char, 3> color_data = {pixel.r, pixel.g, pixel.b};
+                color_corrector_.ReverseCorrectInPlace(color_data.data());
+                pixel = {color_data[0], color_data[1], color_data[2]};
+            }
+
+            // Use the .r, .g, .b members of the struct.
+            float r = pixel.r / 255.0f;
+            float g = pixel.g / 255.0f;
+            float b = pixel.b / 255.0f;
+
+            float current_alpha = (r == 0.0f && g == 0.0f && b == 0.0f) ? 0.0f : alpha;
+            instance_colors[i] = glm::vec4(r, g, b, current_alpha);
         }
-
-        float r = pixel[0] / 255.0f;
-        float g = pixel[1] / 255.0f;
-        float b = pixel[2] / 255.0f;
-
-        float current_alpha = (r == 0.0f && g == 0.0f && b == 0.0f) ? 0.0f : alpha;
-
-        instance_colors[i] = glm::vec4(r, g, b, current_alpha);
     }
-
     glBindBuffer(GL_ARRAY_BUFFER, vbo_instance_colors);
     glBufferSubData(GL_ARRAY_BUFFER, 0, num_voxels * sizeof(glm::vec4), &instance_colors[0]);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
@@ -561,7 +572,13 @@ void VolumetricDisplay::cleanup() {
       }
   }
 
-  glDeleteVertexArrays(1, &vao);
+  if (window_) {
+      glfwDestroyWindow(window_);
+      window_ = nullptr;
+  }
+  glfwTerminate();
+
+  /*glDeleteVertexArrays(1, &vao);
   glDeleteBuffers(1, &vbo_vertices);
   glDeleteBuffers(1, &vbo_indices);
   glDeleteBuffers(1, &vbo_instance_positions);
@@ -573,22 +590,17 @@ void VolumetricDisplay::cleanup() {
   glDeleteBuffers(1, &wireframe_ebo);
   glDeleteProgram(wireframe_shader_program);
 
-  glfwTerminate();
+  glfwTerminate();*/
 }
 
-void VolumetricDisplay::framebufferSizeCallback(GLFWwindow *window, int width,
-                                                int height) {
-  glViewport(0, 0, width, height);
-  viewport_width = width;
-  viewport_height = height;
-  viewport_aspect =
-      static_cast<float>(viewport_width) / static_cast<float>(viewport_height);
-
-  view_update.notify_all();
-}
-
-void VolumetricDisplay::updateCamera() {
-    // This logic is now handled inside the render loop with projection and view matrices
+void VolumetricDisplay::framebufferSizeCallback(GLFWwindow* window, int width, int height) {
+    VolumetricDisplay* display = static_cast<VolumetricDisplay*>(glfwGetWindowUserPointer(window));
+    if (display) {
+        glViewport(0, 0, width, height);
+        display->viewport_width = width;
+        display->viewport_height = height;
+        display->viewport_aspect = (height == 0) ? 1.0f : static_cast<float>(width) / static_cast<float>(height);
+    }
 }
 
 void VolumetricDisplay::render() {
@@ -638,8 +650,7 @@ void VolumetricDisplay::render() {
   glfwSwapBuffers(glfwGetCurrentContext());
 }
 
-void VolumetricDisplay::keyCallback(GLFWwindow *window, int key, int scancode,
-                                    int action, int mods) {
+void VolumetricDisplay::keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods) {
   if (key == GLFW_KEY_A && action == GLFW_PRESS) {
     show_axis = !show_axis;
   }
@@ -657,26 +668,32 @@ void VolumetricDisplay::rotate(float angle, float x, float y, float z) {
   camera_orientation = rotation * camera_orientation;
 }
 
-void VolumetricDisplay::windowCloseCallback(GLFWwindow *window) {
+void VolumetricDisplay::windowCloseCallback(GLFWwindow* window) {
   VLOG(0) << "Window closed";
   running = false;
   view_update.notify_all();
 }
 
-void VolumetricDisplay::mouseButtonCallback(GLFWwindow *window, int button,
-                                            int action, int mods) {
-  if (button == GLFW_MOUSE_BUTTON_LEFT) {
-      if (action == GLFW_PRESS) {
-          left_mouse_button_pressed = true;
-          glfwGetCursorPos(window, &last_mouse_x, &last_mouse_y);
-      } else if (action == GLFW_RELEASE) {
-          left_mouse_button_pressed = false;
+void VolumetricDisplay::mouseButtonCallback(GLFWwindow* window, int button, int action, int mods) {
+  if (action == GLFW_PRESS) {
+    if (button == GLFW_MOUSE_BUTTON_LEFT) {
+      if (mods & GLFW_MOD_SHIFT) {
+        right_mouse_button_pressed = true;
+      } else {
+        left_mouse_button_pressed = true;
       }
+    }
+  } else if (action == GLFW_RELEASE) {
+    if (button == GLFW_MOUSE_BUTTON_LEFT) {
+      right_mouse_button_pressed = false;
+      left_mouse_button_pressed = false;
+    }
   }
+
+  view_update.notify_all();
 }
 
-void VolumetricDisplay::cursorPositionCallback(GLFWwindow *window, double xpos,
-                                               double ypos) {
+void VolumetricDisplay::cursorPositionCallback(GLFWwindow* window, double xpos, double ypos) {
   if (left_mouse_button_pressed) {
     float dx = static_cast<float>(xpos - last_mouse_x);
     float dy = static_cast<float>(ypos - last_mouse_y);
@@ -692,8 +709,7 @@ void VolumetricDisplay::cursorPositionCallback(GLFWwindow *window, double xpos,
   view_update.notify_all();
 }
 
-void VolumetricDisplay::scrollCallback(GLFWwindow *window, double xoffset,
-                                       double yoffset) {
+void VolumetricDisplay::scrollCallback(GLFWwindow* window, double xoffset, double yoffset) {
   camera_distance -= static_cast<float>(yoffset) * 2.0f;
   if (camera_distance < 1.0f) {
     camera_distance = 1.0f;

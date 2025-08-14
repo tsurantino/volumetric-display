@@ -10,9 +10,10 @@ class RainbowScene(Scene):
         for y in range(raster.height):
             for x in range(raster.width):
                 for z in range(raster.length):
-                    idx = y * raster.width + x + z * raster.width * raster.height
-
-                    # Hue is now based on the simple coordinates of the large raster
+                    # Calculate hue based on voxel position and time
                     hue = (x + y + z) * 4 + time * 50
 
-                    raster.data[idx] = RGB.from_hsv(HSV(int(hue) % 256, 255, 255))
+                    # Convert the HSV color to an RGB object
+                    color = RGB.from_hsv(HSV(int(hue) % 256, 255, 255))
+
+                    raster.set_pix(x, y, z, color)
