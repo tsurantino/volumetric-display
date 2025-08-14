@@ -1,51 +1,37 @@
+"""
+Rust-based game utility replacement with enhanced performance and monitoring.
+
+This module provides a drop-in replacement for the ControllerInputHandler
+in game_util.py using the high-performance Rust control port implementation.
+"""
+
 import asyncio
 import threading
 import time
 from collections import deque
-from enum import Enum
-
-import control_port_rust
-
-# Attempt to import GameScene and BaseGame for type checking
-# This might create a circular dependency if they also import from game_util
-# A cleaner solution might involve a state type enum or attribute checking
-try:
-    from game_scene import GameScene
-except ImportError:
-    GameScene = (
-        None  # Fallback if import fails, to avoid crashing if files are temporarily unavailable
-    )
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 try:
-    from games.util.base_game import BaseGame
+    from control_port_rust import create_control_port_from_config
+
+    RUST_AVAILABLE = True
 except ImportError:
-    BaseGame = None  # Fallback
+    RUST_AVAILABLE = False
+    print("Warning: Rust control port not available, falling back to Python implementation")
+    # Import the original classes for fallback
 
-
-class Button(Enum):
-    UP = 0
-    LEFT = 1
-    DOWN = 2
-    RIGHT = 3
-    SELECT = 4
-
-
-class ButtonState(Enum):
-    """Enum representing button state events."""
-
-    PRESSED = 0  # Button was just pressed (down event)
-    RELEASED = 1  # Button was just released (up event)
-    HELD = 2  # Button is being held down
-
-
-class Direction(Enum):
-    LEFT = 1
-    RIGHT = 2
-    UP = 3
-    DOWN = 4
+from games.util.game_util import (
+    Button,
+    ButtonState,
+)
+from games.util.game_util import (
+    ControllerInputHandler as FallbackControllerInputHandler,
+)
 
 
 class DisplayManager:
+    """Enhanced display manager with Rust backend."""
+
     def __init__(self):
         self.last_display_update = 0
         self.display_update_interval = 0.1  # Update displays every 100ms
@@ -74,7 +60,7 @@ class DisplayManager:
                 else:
                     controller_state.clear()
                     controller_state.write_lcd(0, 0, "ARTNET DISPLAY")
-                    controller_state.write_lcd(0, 1, "Display Error")
+                    controller_state.write_lcd(0, 1, "Rust Enhanced")
                     if hasattr(game_state, "__class__") and hasattr(
                         game_state.__class__, "__name__"
                     ):
@@ -91,40 +77,58 @@ class DisplayManager:
             for controller_id, (controller_state, player_id) in controllers.items()
         ]
         if update_tasks:
-            await asyncio.gather(*update_tasks)
+            await asyncio.gather(*update_tasks, return_exceptions=True)
 
 
-class ControllerInputHandler:
+class ControllerInputHandlerRust:
+    """
+    Rust-based controller input handler with enhanced performance and monitoring.
+
+    This class provides a drop-in replacement for the original ControllerInputHandler
+    with the following enhancements:
+    - Uses Rust async sockets for better performance
+    - Fixed configuration instead of enumeration
+    - Built-in web monitoring interface
+    - Enhanced logging and statistics
+    """
+
     def __init__(
         self,
-        controller_mapping=None,
-        control_port_manager=None,
+        controller_mapping: Optional[Dict[str, Any]] = None,
+        config_path: str = "config.json",
+        web_monitor_port: int = 8080,
     ):
-        self.control_port_manager = control_port_manager
-        if self.control_port_manager is None:
-            raise ValueError("ControlPortManager is required")
+        self.controller_mapping = controller_mapping or {}
+        self.config_path = config_path
+        self.web_monitor_port = web_monitor_port
+
+        # State management
         self.controllers = {}  # Maps controller_id to (controller_state, player_id)
         self.active_controllers = []  # List of active controller states
-        self._lock = threading.Lock()
         self.initialized = False
         self.event_queue = deque()  # Queue for (player_id, direction) events
         self.init_event = threading.Event()
-        self.loop = None
-        self._init_task = None
-        self._listen_tasks = {}  # Maps controller_id to its listen task
-        self.select_hold_data = (
-            {}
-        )  # Maps controller_id to {'start_time': float, 'is_counting_down': bool}
+
+        # Button state tracking
+        self.select_hold_data = {}  # Maps controller_id to hold state
         self.last_button_states = {}  # Maps controller_id to list of button states
         self.menu_selection_time = 0  # Time of last menu selection change
         self.menu_votes = {}  # Maps controller_id to their game vote
         self.voting_states = {}  # Maps controller_id to whether they have voted
-        self.controller_mapping = controller_mapping or {}
 
         # New callback system
         self.button_callbacks = {}  # Maps controller_id to callback function
 
-    def register_button_callback(self, controller_id, callback):
+        # Control port instance
+        self.cp = None
+        self._lock = threading.Lock()
+        self.loop = None
+        self._init_task = None
+
+        print(f"ControllerInputHandlerRust initialized with config: {config_path}")
+        print(f"Web monitor will be available on port: {web_monitor_port}")
+
+    def register_button_callback(self, controller_id: str, callback: Callable):
         """Register a callback for button events.
 
         The callback should have the signature:
@@ -140,7 +144,7 @@ class ControllerInputHandler:
             return True
         return False
 
-    def unregister_button_callback(self, controller_id):
+    def unregister_button_callback(self, controller_id: str):
         """Unregister a callback for button events."""
         if controller_id in self.button_callbacks:
             del self.button_callbacks[controller_id]
@@ -149,59 +153,50 @@ class ControllerInputHandler:
 
     async def _async_initialize_and_listen(self):
         """Runs in the asyncio thread to initialize and start listening."""
-        print("ControllerInputHandler: Starting async initialization...")
+        print("ControllerInputHandlerRust: Starting async initialization...")
         try:
-            # Get all available control ports from the manager
-            all_control_ports = self.control_port_manager.get_all_control_ports()
-            print(f"ControllerInputHandler: Found {len(all_control_ports)} control ports")
+            # Create control port with fixed configuration
+            self.cp = create_control_port_from_config(self.config_path, self.web_monitor_port)
 
-            if not all_control_ports:
-                print("ControllerInputHandler: No control ports available from manager.")
+            # Initialize controllers
+            discovered_controllers = await self.cp.enumerate(timeout=5.0)
+
+            if not discovered_controllers:
+                print("ControllerInputHandlerRust: No controllers found in configuration.")
                 self.initialized = False
                 self.init_event.set()
                 return
 
-            connect_tasks = []
-            print("ControllerInputHandler: Processing available control ports...")
-            print(f"ControllerInputHandler: controller_mapping = {self.controller_mapping}")
-            print(
-                f"ControllerInputHandler: all_control_ports keys = {list(all_control_ports.keys())}"
-            )
-            for dip, control_port in all_control_ports.items():
-                # Convert DIP string to integer for mapping lookup
-                dip_int = int(dip)
-                print(
-                    f"ControllerInputHandler: Processing control port DIP {dip} (type: {type(dip)}) -> {dip_int}"
-                )
-                print(
-                    f"ControllerInputHandler: Checking if {dip_int} in {list(self.controller_mapping.keys())}"
-                )
-                if dip_int in self.controller_mapping:
-                    player_id = self.controller_mapping[dip_int]
-                    print(
-                        f"ControllerInputHandler: Controller DIP {dip_int} "
-                        f"maps to player_id={player_id}. Creating connect task."
-                    )
-                    connect_tasks.append(self._connect_and_register(control_port, player_id))
-                else:
-                    print(
-                        f"ControllerInputHandler: Control port DIP {dip_int} "
-                        f"not assigned a role in mapping. Skipping."
+            # Map controllers to players
+            for dip, controller_state in discovered_controllers.items():
+                if dip in self.controller_mapping:
+                    player_id = self.controller_mapping[dip]
+                    self.controllers[dip] = (controller_state, player_id)
+                    self.active_controllers.append(controller_state)
+
+                    # Set up button callback
+                    controller_state.register_button_callback(
+                        lambda buttons, controller_dip=dip: self._button_callback(
+                            buttons, controller_dip
+                        )
                     )
 
-            print(f"ControllerInputHandler: Built connect_tasks list: {connect_tasks}")
-            if connect_tasks:
-                print(
-                    f"ControllerInputHandler: Calling asyncio.gather for {len(connect_tasks)} tasks..."
-                )
-                results = await asyncio.gather(*connect_tasks, return_exceptions=True)
-                print(f"ControllerInputHandler: asyncio.gather results: {results}")
+                    # Initialize button state tracking
+                    self.select_hold_data[dip] = {"start_time": 0, "is_counting_down": False}
+                    self.last_button_states[dip] = [False] * 5
+
+                    print(
+                        f"ControllerInputHandlerRust: Registered controller DIP {dip} as player {player_id}"
+                    )
+                else:
+                    print(
+                        f"ControllerInputHandlerRust: Controller DIP {dip} not mapped to any player"
+                    )
 
             self.initialized = len(self.controllers) > 0
             print(
-                f"ControllerInputHandler: Initialization complete. "
-                f"self.initialized = {self.initialized}, "
-                f"self.controllers = {self.controllers}"
+                f"ControllerInputHandlerRust: Initialization complete. "
+                f"Initialized: {self.initialized}, Controllers: {len(self.controllers)}"
             )
 
         except Exception as e:
@@ -213,40 +208,8 @@ class ControllerInputHandler:
         finally:
             self.init_event.set()
 
-    async def _connect_and_register(
-        self, controller_state_instance: control_port_rust.ControlPort, player_id
-    ):
-        """Helper to connect a single controller (given as ControlPort instance) and register callback."""
-        dip = controller_state_instance.dip
-
-        if not controller_state_instance.connected:
-            # The ControlPort is already connected when we get it from the manager
-            # No need to call connect() method
-            pass
-
-        print(
-            f"ControllerInputHandler: Successfully connected/verified controller "
-            f"DIP {dip} ({player_id.name})"
-        )
-
-        self.controllers[dip] = (controller_state_instance, player_id)
-        if controller_state_instance not in self.active_controllers:
-            self.active_controllers.append(controller_state_instance)
-
-        # Fix the lambda closure issue by properly capturing the dip value
-        def create_button_callback(controller_dip):
-            return lambda buttons: self._button_callback(buttons, controller_dip)
-
-        controller_state_instance.register_button_callback(create_button_callback(dip))
-
-        self.select_hold_data[dip] = {"start_time": 0, "is_counting_down": False}
-        self.last_button_states[dip] = [False] * 5
-
-        # Return success indicator
-        return True
-
-    def _button_callback(self, buttons, controller_id):
-        """Called from the asyncio thread when a controller's buttons change."""
+    def _button_callback(self, buttons: List[bool], controller_id: str):
+        """Called when a controller's buttons change."""
         if controller_id not in self.controllers:
             return
 
@@ -269,8 +232,6 @@ class ControllerInputHandler:
                         "is_counting_down": True,
                     }
 
-                # NOTE: No longer adding to event queue - using callbacks exclusively
-
             elif not buttons[button_idx] and last_buttons[button_idx]:
                 # Button was just released
                 self._handle_button_event(controller_id, player_id, button, ButtonState.RELEASED)
@@ -279,18 +240,16 @@ class ControllerInputHandler:
                 if button == Button.SELECT:
                     self.select_hold_data[controller_id]["is_counting_down"] = False
 
-                # NOTE: No longer adding to event queue - using callbacks exclusively
-
             elif buttons[button_idx]:
                 # Button is being held down
                 self._handle_button_event(controller_id, player_id, button, ButtonState.HELD)
 
-                # We don't add HELD events to the queue
-
         # Store the new state
         self.last_button_states[controller_id] = list(buttons)
 
-    def _handle_button_event(self, controller_id, player_id, button, button_state):
+    def _handle_button_event(
+        self, controller_id: str, player_id: Any, button: Button, button_state: ButtonState
+    ):
         """Process a button event and call the registered callback if any."""
         # Invoke the callback if registered
         if controller_id in self.button_callbacks:
@@ -300,7 +259,7 @@ class ControllerInputHandler:
             except Exception as e:
                 print(f"Error in button callback for controller {controller_id}: {e}")
 
-    def get_direction_key(self):
+    def get_direction_key(self) -> Optional[Tuple[Any, Button, ButtonState]]:
         """Called from the main game thread to get the next input event.
 
         Returns:
@@ -314,7 +273,7 @@ class ControllerInputHandler:
                 return self.event_queue.popleft()
         return None
 
-    def check_for_restart_signal(self):
+    def check_for_restart_signal(self) -> bool:
         """Check if any controller has held SELECT for 5 seconds."""
         current_time = time.monotonic()
         for controller_id, hold_data in self.select_hold_data.items():
@@ -333,11 +292,15 @@ class ControllerInputHandler:
         self.menu_votes.clear()
         self.voting_states.clear()
 
-    def start_initialization(self):
+    def start_initialization(self) -> bool:
         """Starts the background thread and waits for initialization."""
+        if not RUST_AVAILABLE:
+            print("Rust implementation not available, cannot start")
+            return False
+
         self.thread = threading.Thread(target=self._run_asyncio_loop, daemon=True)
         self.thread.start()
-        initialized = self.init_event.wait(timeout=7.0)
+        initialized = self.init_event.wait(timeout=10.0)  # Longer timeout for Rust init
         if not initialized:
             print("Controller initialization timed out.")
             self.stop()
@@ -345,6 +308,7 @@ class ControllerInputHandler:
         return self.initialized
 
     def _run_asyncio_loop(self):
+        """Run the asyncio event loop in a separate thread."""
         try:
             self.loop = asyncio.get_event_loop()
         except RuntimeError:
@@ -359,17 +323,7 @@ class ControllerInputHandler:
             if self._init_task and not self._init_task.done():
                 self._init_task.cancel()
 
-            for task in self._listen_tasks.values():
-                if not task.done():
-                    task.cancel()
-
-            async def gather_cancelled():
-                tasks = [t for t in asyncio.all_tasks(self.loop) if t.cancelled()]
-                if tasks:
-                    await asyncio.gather(*tasks, return_exceptions=True)
-
             if self.loop.is_running():
-                self.loop.run_until_complete(gather_cancelled())
                 self.loop.run_until_complete(self.loop.shutdown_asyncgens())
 
             self.loop.close()
@@ -377,21 +331,92 @@ class ControllerInputHandler:
 
     def stop(self):
         """Clean up all controller connections and tasks."""
-        print("Stopping controller input handler...")
+        print("Stopping Rust controller input handler...")
+
+        if hasattr(self, "cp") and self.cp:
+            self.cp.shutdown()
+
         loop = getattr(self, "loop", None)
         if loop and loop.is_running():
-            # Connection management is handled by the Rust side
-            # No need to manually disconnect
-            pass
-
             if self._init_task:
                 loop.call_soon_threadsafe(self._init_task.cancel)
-
-            for task in self._listen_tasks.values():
-                if not task.done():
-                    loop.call_soon_threadsafe(task.cancel)
-
             loop.call_soon_threadsafe(loop.stop)
 
         if hasattr(self, "thread") and self.thread.is_alive():
             self.thread.join(timeout=3.0)
+
+    def get_stats(self) -> List[Dict[str, Any]]:
+        """Get controller statistics (Rust implementation only)."""
+        if self.cp:
+            return self.cp.get_stats()
+        return []
+
+    def get_web_monitor_url(self) -> str:
+        """Get the URL for the web monitoring interface."""
+        return f"http://localhost:{self.web_monitor_port}"
+
+
+# Compatibility class that chooses between Rust and Python implementations
+class ControllerInputHandler:
+    """
+    Smart controller input handler that uses Rust when available, falls back to Python.
+    """
+
+    def __new__(
+        cls,
+        controller_mapping: Optional[Dict[str, Any]] = None,
+        hosts_and_ports: Optional[List[Tuple[str, int]]] = None,
+        config_path: str = "config.json",
+        web_monitor_port: int = 8080,
+        **kwargs,
+    ):
+        # Try to use Rust implementation first
+        if RUST_AVAILABLE:
+            try:
+                return ControllerInputHandlerRust(
+                    controller_mapping=controller_mapping,
+                    config_path=config_path,
+                    web_monitor_port=web_monitor_port,
+                )
+            except Exception as e:
+                print(f"Failed to initialize Rust implementation: {e}")
+                print("Falling back to Python implementation")
+
+        # Fall back to Python implementation
+        if hosts_and_ports is None:
+            # Convert config-based setup to hosts_and_ports for compatibility
+            try:
+                import json
+
+                with open(config_path, "r") as f:
+                    config = json.load(f)
+
+                hosts_and_ports = []
+                for controller_config in config.get("controller_addresses", {}).values():
+                    hosts_and_ports.append((controller_config["ip"], controller_config["port"]))
+
+            except Exception as e:
+                print(f"Could not load config file {config_path}: {e}")
+                hosts_and_ports = []
+
+        return FallbackControllerInputHandler(
+            controller_mapping=controller_mapping, hosts_and_ports=hosts_and_ports, **kwargs
+        )
+
+
+# Usage example
+if __name__ == "__main__":
+    print(f"Rust control port available: {RUST_AVAILABLE}")
+    print("")
+    print("Usage:")
+    print("  # Use with existing code (automatic fallback)")
+    print("  handler = ControllerInputHandler(controller_mapping={'0': 'player1'})")
+    print("")
+    print("  # Use Rust implementation explicitly")
+    print("  handler = ControllerInputHandlerRust(")
+    print("      controller_mapping={'0': 'player1'},")
+    print("      config_path='config.json',")
+    print("      web_monitor_port=8080")
+    print("  )")
+    print("")
+    print("Web monitor will be available at http://localhost:8080")

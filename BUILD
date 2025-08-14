@@ -1,8 +1,7 @@
 load("@hedron_compile_commands//:refresh_compile_commands.bzl", "refresh_compile_commands")
 load("@pip//:requirements.bzl", "requirement")
 load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
-load("@rules_pyo3//pyo3:defs.bzl", "pyo3_extension")
-load("@rules_python//python:defs.bzl", "py_binary", "py_library", "py_test")
+load("@rules_python//python:defs.bzl", "py_binary", "py_library")
 load("@rules_rust//rust:defs.bzl", "rust_binary")
 
 cc_library(
@@ -57,7 +56,7 @@ py_binary(
 py_library(
     name = "artnet",
     srcs = ["artnet.py"],
-    deps = [":artnet_rs"],
+    deps = ["//src/artnet:artnet_rs"],
 )
 
 py_binary(
@@ -65,6 +64,7 @@ py_binary(
     srcs = ["sender.py"],
     deps = [
         ":artnet",
+        ":control_port_rust",
         requirement("numpy"),
     ],
 )
@@ -98,15 +98,18 @@ cc_library(
 )
 
 py_library(
-    name = "control_port",
-    srcs = ["control_port.py"],
+    name = "control_port_rust",
+    srcs = ["control_port_rust.py"],
+    visibility = ["//visibility:public"],
+    deps = ["//src/control_port:control_port_rs"],
 )
 
-py_test(
-    name = "control_port_test",
-    srcs = ["control_port_test.py"],
+py_binary(
+    name = "test_rust_control_port",
+    srcs = ["test_rust_control_port.py"],
     deps = [
-        ":control_port",
+        ":control_port_rust",
+        "//games/util:game_util_rust",
     ],
 )
 
@@ -124,11 +127,8 @@ rust_binary(
     ],
 )
 
-pyo3_extension(
-    name = "artnet_rs",
-    srcs = ["src/lib.rs"],
-    crate_features = [
-        "extension-module",
-        "abi3-py311",
-    ],
+py_library(
+    name = "controller_simulator_lib",
+    srcs = ["controller_simulator_lib.py"],
+    visibility = ["//visibility:public"],
 )
