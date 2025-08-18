@@ -271,6 +271,7 @@ class PongGame(BaseGame):
     def _start_match(self):
         self.game_phase = "running"
         self.server = random.choice(list(self.active_players))
+        self.last_hitter = self.server
         self.ball = Ball(0, 0, 0, 0, 0, 0, attached_to=self.server)
         self.current_ball_speed = self.base_ball_speed
         self._attach_ball_to_paddle()
@@ -506,6 +507,7 @@ class PongGame(BaseGame):
                     # new server becomes player who missed
                     if not self.game_over_active:
                         self.server = player
+                        self.last_hitter = self.server
                         self.ball.attached_to = self.server
                         self._attach_ball_to_paddle()
                 return
