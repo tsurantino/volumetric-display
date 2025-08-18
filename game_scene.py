@@ -218,6 +218,11 @@ class GameScene(Scene):
                 self.game_started = False
                 self.countdown_active = False
                 self.countdown_value = None
+
+                # delete cube rotation so that it is reapplied when returning to main menu
+                if hasattr(self, "_cube_rot_state"):
+                    del self._cube_rot_state
+
                 # Reset all menu-related state
                 self.menu_selections = {}
                 self.menu_votes = {}
