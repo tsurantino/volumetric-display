@@ -164,6 +164,7 @@ class PongGame(BaseGame):
         self.paddles: Dict[PlayerID, Paddle] = {}
         self.ball: Ball | None = None
         self.server: PlayerID | None = None
+        self.last_hitter: PlayerID | None = None
         self.scores: Dict[PlayerID, str] = {pid: 0 for pid in PlayerID}
         self.particles: List[Particle] = []
         self.splashes: List[Splash] = []
@@ -185,6 +186,7 @@ class PongGame(BaseGame):
         self.paddles = {}
         self.ball = None
         self.server = None
+        self.last_hitter = None
         self.scores = {pid: 0 for pid in PlayerID}
         self.particles = []
         self.splashes = []
@@ -470,14 +472,15 @@ class PongGame(BaseGame):
                         self.ball.y = BALL_RADIUS if face == "y-" else self.height - 1 - BALL_RADIUS
                     bounced = True
                 if bounced:
+                    self.last_hitter = player
                     self._apply_spike(pad, axis)
                     self._after_bounce(
                         face, self.ball.y if axis == "x" else self.ball.x, self.ball.z
                     )
                     return
             else:
-                # miss -> point to server
-                scorer = self.server  # keep the serving player for explosion color
+                # miss -> point to last hitter or server
+                scorer = self.last_hitter if self.last_hitter else self.server
                 self.scores[scorer] += 1
                 # explosion with scorer color
                 self._spawn_explosion(
@@ -739,8 +742,9 @@ class PongGame(BaseGame):
     def _after_bounce(self, face: str, u: float, v: float):
         """Common logic after every bounce: speed-up and spawn splash."""
         self._increase_ball_speed()
-        # splash colour in serving paddle team colour
-        col = PLAYER_TEAM[self.server].get_color() if self.server else RGB(255, 255, 255)
+        # splash colour in last hitter color
+        hitter = self.last_hitter if self.last_hitter else self.server
+        col = PLAYER_TEAM[self.server].get_color() if hitter else RGB(255, 255, 255)
         self._spawn_splash(face, u, v, col, self._now)
 
     def _spawn_splash(
