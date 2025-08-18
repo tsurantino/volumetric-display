@@ -4,8 +4,6 @@ import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Set
 
-import numpy as np
-
 from games.util.base_game import RGB, BaseGame, PlayerID, TeamID
 from games.util.game_util import Button, ButtonState
 
@@ -27,6 +25,8 @@ MAX_SPEED_MULT = 2.5  # cap ball speed increase
 SPLASH_LIFETIME = 0.5  # seconds splash lasts
 SPLASH_MAX_RADIUS = 4.0
 VELOCITY_SCALE = 0.05  # scale paddle movement to ball velocity
+EDGE_INFLUENCE = 0.4  # How much edge hits affect ball angle
+PADDLE_VEL_INFLUENCE = 0.6  # How much paddle speed affects ball speed
 
 PLAYER_FACE = {
     PlayerID.P1: "x+",  # +X face
@@ -408,92 +408,74 @@ class PongGame(BaseGame):
 
     def _handle_face(self, face, bound, axis="x"):
         if face in [pad.face for pad in self.paddles.values()]:
-            # find player
+            # Find the player and paddle for this face
             player = [pid for pid, p in self.paddles.items() if p.face == face][0]
             pad = self.paddles[player]
-            # compute hit against paddle area
-            dx = self.ball.y - pad.cx if axis == "x" else self.ball.x - pad.cx
-            dy = self.ball.z - pad.cy
-            if abs(dx) <= PADDLE_SIZE + BALL_RADIUS and abs(dy) <= PADDLE_SIZE + BALL_RADIUS:
-                edge_zone = PADDLE_SIZE - EDGE_EPS
-                # Determine bounce axis
-                bounced = False
-                if abs(dx) > edge_zone or abs(dy) > edge_zone:
-                    # Only count edge hits if the ball is moving towards the paddle center
-                    # Map paddle (cx,cy) on its face to world XYZ coordinates
-                    if face == "x-":  # negative X face at x = 0
-                        paddle_center_world = np.array([0, pad.cx, pad.cy])
-                    elif face == "x+":  # positive X face at x = width-1
-                        paddle_center_world = np.array([self.width - 1, pad.cx, pad.cy])
-                    elif face == "y-":  # negative Y face at y = 0
-                        paddle_center_world = np.array([pad.cx, 0, pad.cy])
-                    elif face == "y+":  # positive Y face at y = height-1
-                        paddle_center_world = np.array([pad.cx, self.height - 1, pad.cy])
-                    dir_to_paddle = paddle_center_world - np.array(
-                        [self.ball.x, self.ball.y, self.ball.z]
-                    )
-                    dot_product = np.dot(
-                        dir_to_paddle,
-                        np.array([self.ball.vx, self.ball.vy, self.ball.vz]),
-                    )
-                    print(f"Dot product: {dot_product}")
 
-                    if dot_product > 0:
-                        # Ball is moving towards from the paddle center
-                        # Edge hit – treat as wall parallel to paddle edge
-                        if axis == "x":
-                            self.ball.vx *= -1
-                            if abs(dx) >= abs(dy):
-                                # side edges bounce horizontally (invert vy)
-                                self.ball.vy *= -1
-                                offset = (PADDLE_SIZE + BALL_RADIUS) * math.copysign(1, dx)
-                                self.ball.y = pad.cx + offset
-                            else:
-                                self.ball.vz *= -1
-                                offset = (PADDLE_SIZE + BALL_RADIUS) * math.copysign(1, dy)
-                                self.ball.z = pad.cy + offset
-                        else:  # axis=='y'
-                            self.ball.vy *= -1
-                            if abs(dx) >= abs(dy):
-                                self.ball.vx *= -1
-                                offset = (PADDLE_SIZE + BALL_RADIUS) * math.copysign(1, dx)
-                                self.ball.x = pad.cx + offset
-                            else:
-                                self.ball.vz *= -1
-                                offset = (PADDLE_SIZE + BALL_RADIUS) * math.copysign(1, dy)
-                                self.ball.z = pad.cy + offset
-                        bounced = True
-                else:
-                    # Centre bounce (normal)
-                    if axis == "x":
-                        self.ball.vx *= -1
-                        self.ball.x = BALL_RADIUS if face == "x-" else self.width - 1 - BALL_RADIUS
-                    else:
-                        self.ball.vy *= -1
-                        self.ball.y = BALL_RADIUS if face == "y-" else self.height - 1 - BALL_RADIUS
-                    bounced = True
-                if bounced:
-                    self.last_hitter = player
-                    self._apply_spike(pad, axis)
-                    self._after_bounce(
-                        face,
-                        self.ball.y if axis == "x" else self.ball.x,
-                        self.ball.z,
-                        hitter=player,
-                    )
-                    return
+            # --- 1. More Accurate Collision Detection (Circle vs. Rectangle) ---
+            # Determine the ball's coordinates in the paddle's 2D plane
+            ball_u = self.ball.y if axis == "x" else self.ball.x
+            ball_v = self.ball.z
+
+            # Find the closest point on the paddle rectangle to the ball's center
+            closest_u = max(pad.cx - PADDLE_SIZE, min(ball_u, pad.cx + PADDLE_SIZE))
+            closest_v = max(pad.cy - PADDLE_SIZE, min(ball_v, pad.cy + PADDLE_SIZE))
+
+            # Calculate the squared distance from the ball's center to this closest point
+            dist_sq = (ball_u - closest_u) ** 2 + (ball_v - closest_v) ** 2
+
+            if dist_sq <= BALL_RADIUS**2:
+                # --- COLLISION DETECTED ---
+
+                # --- 2. Calculate New Bounce Vector ---
+                # Reflect the ball on the primary axis (the paddle's face)
+                if axis == "x":
+                    self.ball.vx *= -1
+                    self.ball.x = BALL_RADIUS if face == "x-" else self.width - 1 - BALL_RADIUS
+                else:  # axis == 'y'
+                    self.ball.vy *= -1
+                    self.ball.y = BALL_RADIUS if face == "y-" else self.height - 1 - BALL_RADIUS
+
+                # Calculate where the ball hit relative to the paddle's center (-1.0 to 1.0)
+                hit_pos_u = (ball_u - pad.cx) / PADDLE_SIZE
+                hit_pos_v = (ball_v - pad.cy) / PADDLE_SIZE
+
+                # --- 3. Apply Edge Angle and Paddle Velocity ---
+                # Calculate the new velocity on the paddle's plane
+                vel_on_plane_u = (hit_pos_u * self.current_ball_speed * EDGE_INFLUENCE) + (
+                    pad.vel_u * PADDLE_VEL_INFLUENCE
+                )
+                vel_on_plane_v = (hit_pos_v * self.current_ball_speed * EDGE_INFLUENCE) + (
+                    pad.vel_v * PADDLE_VEL_INFLUENCE
+                )
+
+                if axis == "x":
+                    self.ball.vy = vel_on_plane_u
+                    self.ball.vz = vel_on_plane_v
+                else:  # axis == 'y'
+                    self.ball.vx = vel_on_plane_u
+                    self.ball.vz = vel_on_plane_v
+
+                # Renormalize the ball's speed to maintain a constant speed after the bounce
+                speed = math.sqrt(self.ball.vx**2 + self.ball.vy**2 + self.ball.vz**2)
+                if speed > 0:
+                    scale = self.current_ball_speed / speed
+                    self.ball.vx *= scale
+                    self.ball.vy *= scale
+                    self.ball.vz *= scale
+
+                # --- 4. Stack Spike Effect on Top ---
+                self.last_hitter = player
+                self._apply_spike(pad, axis)  # The spike effect is added on top of the new velocity
+                self._after_bounce(face, ball_u, ball_v, hitter=player)
+                return
             else:
-                # miss -> point to last hitter or server
+                # --- MISS ---
                 scorer = self.last_hitter if self.last_hitter else self.server
                 self.scores[scorer] += 1
-                # explosion with scorer color
                 self._spawn_explosion(
-                    self.ball.x,
-                    self.ball.y,
-                    self.ball.z,
-                    PLAYER_TEAM[scorer].get_color(),
+                    self.ball.x, self.ball.y, self.ball.z, PLAYER_TEAM[scorer].get_color()
                 )
-                # check game over
                 if self.scores[scorer] >= WIN_SCORE:
                     self.game_phase = "gameover"
                     self.game_over_active = True
@@ -501,25 +483,26 @@ class PongGame(BaseGame):
                     self.winner_players = [
                         pid for pid, sc in self.scores.items() if sc == max_score
                     ]
-                    # flashing border setup using winner color
                     self.game_over_flash_state["border_color"] = PLAYER_TEAM[scorer].get_color()
                 else:
-                    # new server becomes player who missed
                     if not self.game_over_active:
                         self.server = player
                         self.last_hitter = self.server
                         self.ball.attached_to = self.server
                         self._attach_ball_to_paddle()
                 return
-        # wall bounce
+
+        # --- WALL BOUNCE (no paddle on face) ---
         if axis == "x":
             self.ball.vx *= -1
             self.ball.x = BALL_RADIUS if face == "x-" else self.width - 1 - BALL_RADIUS
-        else:
+        else:  # axis == 'y'
             self.ball.vy *= -1
             self.ball.y = BALL_RADIUS if face == "y-" else self.height - 1 - BALL_RADIUS
-        # splash on empty wall
-        self._after_bounce(face, self.ball.y if axis == "x" else self.ball.x, self.ball.z)
+
+        u_coord = self.ball.y if axis == "x" else self.ball.x
+        v_coord = self.ball.z
+        self._after_bounce(face, u_coord, v_coord)
 
     def get_player_score(self, player_id):
         return self.scores.get(player_id, 0)
