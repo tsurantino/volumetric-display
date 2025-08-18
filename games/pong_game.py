@@ -475,7 +475,10 @@ class PongGame(BaseGame):
                     self.last_hitter = player
                     self._apply_spike(pad, axis)
                     self._after_bounce(
-                        face, self.ball.y if axis == "x" else self.ball.x, self.ball.z
+                        face,
+                        self.ball.y if axis == "x" else self.ball.x,
+                        self.ball.z,
+                        hitter=player,
                     )
                     return
             else:
@@ -739,12 +742,18 @@ class PongGame(BaseGame):
             self.ball.vy *= scale
             self.ball.vz *= scale
 
-    def _after_bounce(self, face: str, u: float, v: float):
+    def _after_bounce(self, face: str, u: float, v: float, hitter: PlayerID | None = None):
         """Common logic after every bounce: speed-up and spawn splash."""
         self._increase_ball_speed()
-        # splash colour in last hitter color
-        hitter = self.last_hitter if self.last_hitter else self.server
-        col = PLAYER_TEAM[self.server].get_color() if hitter else RGB(255, 255, 255)
+
+        # Determine the correct color for the splash effect
+        color_source_player = hitter if hitter is not None else self.last_hitter
+
+        if color_source_player:
+            col = PLAYER_TEAM[color_source_player].get_color()
+        else:
+            col = RGB(255, 255, 255)  # Default to white if no player is set
+
         self._spawn_splash(face, u, v, col, self._now)
 
     def _spawn_splash(
