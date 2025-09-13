@@ -147,7 +147,12 @@ VolumetricDisplay::VolumetricDisplay(int width, int height, int length,
     LOG(INFO) << "Initializing " << listener_info_.size() << " Art-Net listener threads...";
     for (size_t i = 0; i < cubes_config_.size(); ++i) {
         for (const auto& listener_cfg : cubes_config_[i].listeners) {
-            listener_info_.push_back({listener_cfg.ip, listener_cfg.port, static_cast<int>(i)});
+            listener_info_.push_back({
+            listener_cfg.ip, 
+            listener_cfg.port, 
+            static_cast<int>(i),
+            listener_cfg.z_indices  
+        });
         }
     }
 
@@ -530,19 +535,34 @@ void VolumetricDisplay::listenArtNet(int listener_index) {
             uint16_t dmx_length = ntohs(*reinterpret_cast<uint16_t *>(&buffer[16]));
             dmx_length = std::min(dmx_length, (uint16_t)512);
 
-            int layer = (universe / universes_per_layer) / layer_span;
+            // Map universe to specific Z-index within this controller's range
+            int layer = universe / universes_per_layer;
+            
+            // Check if this layer is within this controller's range
+            if (layer >= info.z_indices.size()) {
+                LOG(WARNING) << "Port " << info.port << " received layer " << layer 
+                            << " but only has " << info.z_indices.size() << " z_indices";
+                continue;
+            }
+            
+            int actual_z = info.z_indices[layer];  // Map to actual Z-index
             int universe_in_layer = universe % universes_per_layer;
-            int start_pixel_in_layer = universe_in_layer * (170);
+            int start_pixel_in_layer = universe_in_layer * 170;
 
             auto lg = std::lock_guard(pixels_mu);
             for (size_t i = 0; i < dmx_length; i += 3) {
                 if (18 + i + 2 >= total_length) break;
 
                 int idx_in_layer = start_pixel_in_layer + i / 3;
+                if (idx_in_layer >= width * height) {
+                    continue; // Skip overflow pixels
+                }
+
                 int x = idx_in_layer % width;
                 int y = idx_in_layer / width;
 
-                size_t pixel_index = pixel_buffer_offset + static_cast<size_t>(x + y * width + layer * width * height);
+                // Write to ONE specific Z-index, not all of them
+                size_t pixel_index = pixel_buffer_offset + static_cast<size_t>(x + y * width + actual_z * width * height);
 
                 if (pixel_index < pixels.size()) {
                     pixels[pixel_index] = {
@@ -770,7 +790,7 @@ void VolumetricDisplay::cursorPositionCallback(GLFWwindow* window, double xpos, 
     // Panning (SHIFT + mouse drag)
     float dx = static_cast<float>(xpos - last_mouse_x);
     float dy = static_cast<float>(ypos - last_mouse_y);
-    camera_position += glm::vec3(-dx * 0.05f, dy * 0.05f, 0.0f);
+    camera_position += glm::vec3(dx * 0.05f, -dy * 0.05f, 0.0f);
   }
 
   last_mouse_x = xpos;

@@ -68,6 +68,11 @@ int main(int argc, char *argv[]) {
                 } else {
                     listener.port = mapping_json["port"];
                 }
+                
+                // Parse z_idx array
+                for (const auto& z : mapping_json["z_idx"]) {
+                    listener.z_indices.push_back(z);
+                }
                 current_cube.listeners.push_back(listener);
             }
             cube_configs.push_back(current_cube);

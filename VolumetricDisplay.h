@@ -24,6 +24,7 @@ struct ListenerThreadInfo {
     std::string ip;
     int port;
     int cube_index;
+    std::vector<int> z_indices;
 };
 
 class VolumetricDisplay {
