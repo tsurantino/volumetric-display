@@ -45,7 +45,6 @@ private:
     void setupVBO();
     void cleanup();
 
-    // FIX: Declaration added for this utility function.
     GLuint compileShader(GLenum type, const char* source);
 
     // Main Loop & Rendering Helpers
@@ -54,6 +53,7 @@ private:
     void drawWireframeCubes();
     void drawAxes();
     void rotate(float angle, float x, float y, float z);
+    glm::vec3 calculateSceneCenter();  // ADD THIS LINE HERE
 
     // Networking
     void listenArtNet(int listener_index);
@@ -100,7 +100,7 @@ private:
     std::condition_variable view_update;
     std::vector<VoxelColor> pixels;
 
-    boost::asio::io_service io_service;
+    boost::asio::io_context io_context;
     std::vector<std::thread> artnet_threads;
     std::vector<std::unique_ptr<boost::asio::ip::udp::socket>> sockets;
     std::vector<CubeConfig> cubes_config_;

@@ -5,9 +5,11 @@
 #include <algorithm>
 #include <array>
 #include <arpa/inet.h>
+#include <stdexcept>
+
+#define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/gtx/quaternion.hpp>
-#include <stdexcept>
 
 // Voxel Shaders
 const char* vertex_shader_source = R"glsl(
@@ -108,10 +110,13 @@ VolumetricDisplay::VolumetricDisplay(int width, int height, int length,
                                      float voxel_scale)
     : width(width), height(height), length(length),
       universes_per_layer(universes_per_layer), layer_span(layer_span),
-      alpha(alpha), voxel_scale(voxel_scale), rotation_rate(initial_rotation_rate),
-      running(false), show_axis(false), show_wireframe(false), needs_update(false),
-      color_correction_enabled_(color_correction_enabled),
-      cubes_config_(cubes_config), pixels() {
+      alpha(alpha), voxel_scale(voxel_scale),
+      show_axis(false), show_wireframe(false), needs_update(false),
+      rotation_rate(initial_rotation_rate),
+      running(false),
+      pixels(),
+      cubes_config_(cubes_config),
+      color_correction_enabled_(color_correction_enabled) {
 
     if (cubes_config_.empty()) {
         throw std::runtime_error("Cube configuration cannot be empty.");
@@ -129,6 +134,7 @@ VolumetricDisplay::VolumetricDisplay(int width, int height, int length,
     glm::quat rot_x = glm::angleAxis(glm::radians(45.0f), glm::vec3(1.0f, 0.0f, 0.0f));
     glm::quat rot_y = glm::angleAxis(glm::radians(-35.0f), glm::vec3(0.0f, 1.0f, 0.0f));
     camera_orientation = rot_y * rot_x;
+    camera_position = glm::vec3(0.0f, 0.0f, 0.0f);
     camera_distance = std::max({(float)width, (float)height, (float)length}) * 3.0f;
     last_mouse_x = 0.0;
     last_mouse_y = 0.0;
@@ -148,10 +154,9 @@ VolumetricDisplay::VolumetricDisplay(int width, int height, int length,
     for (size_t i = 0; i < listener_info_.size(); ++i) {
         const auto& info = listener_info_[i];
         try {
-            auto socket = std::make_unique<boost::asio::ip::udp::socket>(io_service);
+            auto socket = std::make_unique<boost::asio::ip::udp::socket>(io_context);
             socket->open(boost::asio::ip::udp::v4());
-            //socket->set_option(boost::asio::ip::udp::socket::reuse_address(true));
-            socket->bind(boost::asio::ip::udp::endpoint(boost::asio::ip::address::from_string(info.ip), info.port));
+            socket->bind(boost::asio::ip::udp::endpoint(boost::asio::ip::make_address(info.ip), info.port));
             sockets.push_back(std::move(socket));
             artnet_threads.emplace_back(&VolumetricDisplay::listenArtNet, this, i);
         } catch (const boost::system::system_error& e) {
@@ -235,7 +240,14 @@ void VolumetricDisplay::setupAxesShader() {
 void VolumetricDisplay::drawWireframeCubes() {
     glUseProgram(wireframe_shader_program);
 
-    glm::mat4 view = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, -camera_distance)) * glm::toMat4(camera_orientation);
+    // Calculate the center for consistent view matrix
+    glm::vec3 scene_center = calculateSceneCenter();
+
+    glm::mat4 view = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, -camera_distance)) *
+                     glm::translate(glm::mat4(1.0f), camera_position) *
+                     glm::toMat4(camera_orientation) *
+                     glm::translate(glm::mat4(1.0f), -scene_center);
+
     glm::mat4 projection = glm::perspective(glm::radians(45.0f), viewport_aspect, 0.1f, 500.0f);
 
     glUniformMatrix4fv(glGetUniformLocation(wireframe_shader_program, "view"), 1, GL_FALSE, glm::value_ptr(view));
@@ -247,7 +259,7 @@ void VolumetricDisplay::drawWireframeCubes() {
     for (const auto& cube_cfg : cubes_config_) {
         glm::mat4 scale_matrix = glm::scale(glm::mat4(1.0f), glm::vec3(width, height, length));
         glm::vec3 center_offset(width / 2.0f, height / 2.0f, length / 2.0f);
-        glm::mat4 trans_matrix = glm::translate(glm::mat4(1.0f), cube_cfg.position + center_offset); // Center the wireframe
+        glm::mat4 trans_matrix = glm::translate(glm::mat4(1.0f), cube_cfg.position + center_offset);
 
         glm::mat4 model = trans_matrix * scale_matrix;
 
@@ -261,11 +273,34 @@ void VolumetricDisplay::drawAxes() {
     glUseProgram(axis_shader_program);
     glLineWidth(2.0f);
 
-    float axis_length = std::max({(float)width, (float)height, (float)length}) * 1.5f;
-    glm::mat4 model = glm::scale(glm::mat4(1.0f), glm::vec3(axis_length));
+    // Calculate scene bounds to position axes at corner
+    glm::vec3 scene_center = calculateSceneCenter();
+    glm::vec3 min_bounds = cubes_config_[0].position;
+    glm::vec3 max_bounds = cubes_config_[0].position + glm::vec3(width, height, length);
 
-    // **FIX**: Use the same view and projection matrices as everything else
-    glm::mat4 view = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, -camera_distance)) * glm::toMat4(camera_orientation);
+    for (const auto& cube_cfg : cubes_config_) {
+        glm::vec3 cube_min = cube_cfg.position;
+        glm::vec3 cube_max = cube_cfg.position + glm::vec3(width, height, length);
+
+        min_bounds = glm::min(min_bounds, cube_min);
+        max_bounds = glm::max(max_bounds, cube_max);
+    }
+
+    // Add small offset to avoid overlapping with wireframe
+    float offset = std::min({(float)width, (float)height, (float)length}) * 0.1f;
+    glm::vec3 axis_position = min_bounds - glm::vec3(offset, offset, offset);
+
+    // Position axes slightly outside the minimum corner of the scene
+    float axis_length = std::min({(float)width, (float)height, (float)length}) * 0.3f;
+    glm::mat4 model = glm::translate(glm::mat4(1.0f), axis_position) *
+                      glm::scale(glm::mat4(1.0f), glm::vec3(axis_length));
+
+    // Use the same view matrix as wireframes so axes move with the scene
+    glm::mat4 view = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, -camera_distance)) *
+                     glm::translate(glm::mat4(1.0f), camera_position) *
+                     glm::toMat4(camera_orientation) *
+                     glm::translate(glm::mat4(1.0f), -scene_center);
+
     glm::mat4 projection = glm::perspective(glm::radians(45.0f), viewport_aspect, 0.1f, 500.0f);
 
     glUniformMatrix4fv(glGetUniformLocation(axis_shader_program, "model"), 1, GL_FALSE, glm::value_ptr(model));
@@ -560,7 +595,7 @@ void VolumetricDisplay::run() {
 
 void VolumetricDisplay::cleanup() {
   running = false;
-  io_service.stop();
+  io_context.stop();
   for (auto& socket : sockets) {
       if (socket && socket->is_open()) {
           socket->close();
@@ -624,8 +659,15 @@ void VolumetricDisplay::render() {
   glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
   glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-  // Define View and Projection matrices once for all rendering
-  glm::mat4 view = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, -camera_distance)) * glm::toMat4(camera_orientation);
+  // Calculate the center of all cubes for proper rotation
+  glm::vec3 scene_center = calculateSceneCenter();
+
+  // Define View and Projection matrices with proper centering
+  glm::mat4 view = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, -camera_distance)) *
+                   glm::translate(glm::mat4(1.0f), camera_position) *
+                   glm::toMat4(camera_orientation) *
+                   glm::translate(glm::mat4(1.0f), -scene_center);
+
   glm::mat4 projection = glm::perspective(glm::radians(45.0f), viewport_aspect, 0.1f, 500.0f);
 
   // Draw the voxels
@@ -648,6 +690,27 @@ void VolumetricDisplay::render() {
   }
 
   glfwSwapBuffers(glfwGetCurrentContext());
+}
+
+glm::vec3 VolumetricDisplay::calculateSceneCenter() {
+    if (cubes_config_.empty()) {
+        return glm::vec3(0.0f);
+    }
+
+    // Calculate bounding box of all cubes
+    glm::vec3 min_bounds = cubes_config_[0].position;
+    glm::vec3 max_bounds = cubes_config_[0].position + glm::vec3(width, height, length);
+
+    for (const auto& cube_cfg : cubes_config_) {
+        glm::vec3 cube_min = cube_cfg.position;
+        glm::vec3 cube_max = cube_cfg.position + glm::vec3(width, height, length);
+
+        min_bounds = glm::min(min_bounds, cube_min);
+        max_bounds = glm::max(max_bounds, cube_max);
+    }
+
+    // Return the center of the bounding box
+    return (min_bounds + max_bounds) * 0.5f;
 }
 
 void VolumetricDisplay::keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods) {
@@ -695,6 +758,7 @@ void VolumetricDisplay::mouseButtonCallback(GLFWwindow* window, int button, int 
 
 void VolumetricDisplay::cursorPositionCallback(GLFWwindow* window, double xpos, double ypos) {
   if (left_mouse_button_pressed) {
+    // Rotation
     float dx = static_cast<float>(xpos - last_mouse_x);
     float dy = static_cast<float>(ypos - last_mouse_y);
 
@@ -702,7 +766,13 @@ void VolumetricDisplay::cursorPositionCallback(GLFWwindow* window, double xpos, 
     glm::quat rot_y = glm::angleAxis(glm::radians(dx * 0.2f), glm::vec3(0.0f, 1.0f, 0.0f));
 
     camera_orientation = rot_y * rot_x * camera_orientation;
+  } else if (right_mouse_button_pressed) {
+    // Panning (SHIFT + mouse drag)
+    float dx = static_cast<float>(xpos - last_mouse_x);
+    float dy = static_cast<float>(ypos - last_mouse_y);
+    camera_position += glm::vec3(-dx * 0.05f, dy * 0.05f, 0.0f);
   }
+
   last_mouse_x = xpos;
   last_mouse_y = ypos;
 
