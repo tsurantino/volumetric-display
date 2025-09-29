@@ -16,6 +16,11 @@ struct ArtNetListenerConfig {
 // and all the ArtNet listeners that feed it data.
 struct CubeConfig {
     glm::vec3 position;
+    int width = 20;   // Default cube dimensions
+    int height = 20;
+    int length = 20;
+    std::vector<std::string> orientation = {"-Z", "Y", "X"}; // Default sampling orientation
+    std::vector<std::string> world_orientation = {"X", "Y", "Z"}; // Default world orientation
     std::vector<ArtNetListenerConfig> listeners;
 };
 

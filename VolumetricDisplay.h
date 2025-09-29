@@ -59,6 +59,10 @@ private:
     // Networking
     void listenArtNet(int listener_index);
 
+    // Transform matrix computation functions for cube orientation
+    glm::mat4 computeCubeLocalTransformMatrix(const std::vector<std::string>& world_orientation, const glm::vec3& size);
+    glm::mat4 computeCubeToWorldTransformMatrix(const std::vector<std::string>& world_orientation, const glm::vec3& cube_position);
+
     // GLFW Callbacks (must be static)
     void framebufferSizeCallback(GLFWwindow* window, int width, int height);
     void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods);
@@ -69,7 +73,6 @@ private:
 
     // Member Variables
     GLFWwindow* window_;
-    int width, height, length;
     int universes_per_layer, layer_span;
     size_t num_voxels;
 
@@ -109,6 +112,10 @@ private:
 
     bool color_correction_enabled_;
     util::ReverseColorCorrector<3> color_corrector_{util::kColorCorrectorWs2812bOptions};
+
+    // Transform matrices for each cube (computed once and reused)
+    std::vector<glm::mat4> cube_local_transforms_;
+    std::vector<glm::mat4> cube_world_transforms_;
 };
 
 #endif // VOLUMETRIC_DISPLAY_H

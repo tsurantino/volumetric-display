@@ -108,8 +108,7 @@ VolumetricDisplay::VolumetricDisplay(int width, int height, int length,
                                      const glm::vec3 &initial_rotation_rate, bool color_correction_enabled,
                                      const std::vector<CubeConfig>& cubes_config,
                                      float voxel_scale)
-    : width(width), height(height), length(length),
-      universes_per_layer(universes_per_layer), layer_span(layer_span),
+    : universes_per_layer(universes_per_layer), layer_span(layer_span),
       alpha(alpha), voxel_scale(voxel_scale),
       show_axis(false), show_wireframe(false), needs_update(false),
       rotation_rate(initial_rotation_rate),
@@ -122,7 +121,11 @@ VolumetricDisplay::VolumetricDisplay(int width, int height, int length,
         throw std::runtime_error("Cube configuration cannot be empty.");
     }
 
-    num_voxels = static_cast<size_t>(width) * height * (length / layer_span) * cubes_config_.size();
+    // Calculate total voxels using individual cube dimensions
+    num_voxels = 0;
+    for (const auto& cube_cfg : cubes_config_) {
+        num_voxels += static_cast<size_t>(cube_cfg.width) * cube_cfg.height * (cube_cfg.length / layer_span);
+    }
     pixels.resize(num_voxels, {0, 0, 0});
 
     running = true;
@@ -148,10 +151,10 @@ VolumetricDisplay::VolumetricDisplay(int width, int height, int length,
     for (size_t i = 0; i < cubes_config_.size(); ++i) {
         for (const auto& listener_cfg : cubes_config_[i].listeners) {
             listener_info_.push_back({
-            listener_cfg.ip, 
-            listener_cfg.port, 
+            listener_cfg.ip,
+            listener_cfg.port,
             static_cast<int>(i),
-            listener_cfg.z_indices  
+            listener_cfg.z_indices
         });
         }
     }
@@ -262,8 +265,8 @@ void VolumetricDisplay::drawWireframeCubes() {
     glBindVertexArray(wireframe_vao);
 
     for (const auto& cube_cfg : cubes_config_) {
-        glm::mat4 scale_matrix = glm::scale(glm::mat4(1.0f), glm::vec3(width, height, length));
-        glm::vec3 center_offset(width / 2.0f, height / 2.0f, length / 2.0f);
+        glm::mat4 scale_matrix = glm::scale(glm::mat4(1.0f), glm::vec3(cube_cfg.width, cube_cfg.height, cube_cfg.length));
+        glm::vec3 center_offset(cube_cfg.width / 2.0f, cube_cfg.height / 2.0f, cube_cfg.length / 2.0f);
         glm::mat4 trans_matrix = glm::translate(glm::mat4(1.0f), cube_cfg.position + center_offset);
 
         glm::mat4 model = trans_matrix * scale_matrix;
@@ -278,27 +281,7 @@ void VolumetricDisplay::drawAxes() {
     glUseProgram(axis_shader_program);
     glLineWidth(2.0f);
 
-    // Calculate scene bounds to position axes at corner
     glm::vec3 scene_center = calculateSceneCenter();
-    glm::vec3 min_bounds = cubes_config_[0].position;
-    glm::vec3 max_bounds = cubes_config_[0].position + glm::vec3(width, height, length);
-
-    for (const auto& cube_cfg : cubes_config_) {
-        glm::vec3 cube_min = cube_cfg.position;
-        glm::vec3 cube_max = cube_cfg.position + glm::vec3(width, height, length);
-
-        min_bounds = glm::min(min_bounds, cube_min);
-        max_bounds = glm::max(max_bounds, cube_max);
-    }
-
-    // Add small offset to avoid overlapping with wireframe
-    float offset = std::min({(float)width, (float)height, (float)length}) * 0.1f;
-    glm::vec3 axis_position = min_bounds - glm::vec3(offset, offset, offset);
-
-    // Position axes slightly outside the minimum corner of the scene
-    float axis_length = std::min({(float)width, (float)height, (float)length}) * 0.3f;
-    glm::mat4 model = glm::translate(glm::mat4(1.0f), axis_position) *
-                      glm::scale(glm::mat4(1.0f), glm::vec3(axis_length));
 
     // Use the same view matrix as wireframes so axes move with the scene
     glm::mat4 view = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, -camera_distance)) *
@@ -308,12 +291,114 @@ void VolumetricDisplay::drawAxes() {
 
     glm::mat4 projection = glm::perspective(glm::radians(45.0f), viewport_aspect, 0.1f, 500.0f);
 
-    glUniformMatrix4fv(glGetUniformLocation(axis_shader_program, "model"), 1, GL_FALSE, glm::value_ptr(model));
     glUniformMatrix4fv(glGetUniformLocation(axis_shader_program, "view"), 1, GL_FALSE, glm::value_ptr(view));
     glUniformMatrix4fv(glGetUniformLocation(axis_shader_program, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
 
     glBindVertexArray(axis_vao);
-    glDrawArrays(GL_LINES, 0, 6);
+
+    // First, draw the world coordinate axis widget
+    glm::vec3 min_bounds = cubes_config_[0].position;
+    glm::vec3 max_bounds = cubes_config_[0].position + glm::vec3(cubes_config_[0].width, cubes_config_[0].height, cubes_config_[0].length);
+
+    for (const auto& cube_cfg : cubes_config_) {
+        glm::vec3 cube_min = cube_cfg.position;
+        glm::vec3 cube_max = cube_cfg.position + glm::vec3(cube_cfg.width, cube_cfg.height, cube_cfg.length);
+
+        min_bounds = glm::min(min_bounds, cube_min);
+        max_bounds = glm::max(max_bounds, cube_max);
+    }
+
+    // Calculate world axis length and offset
+    float world_axis_length = std::min({max_bounds.x - min_bounds.x, max_bounds.y - min_bounds.y, max_bounds.z - min_bounds.z}) * 0.3f;
+    float world_offset = world_axis_length * 0.5f;
+    glm::vec3 world_axis_position = min_bounds - glm::vec3(world_offset, world_offset, world_offset);
+
+    // Draw world coordinate axis widget
+    glm::mat4 world_model = glm::translate(glm::mat4(1.0f), world_axis_position) *
+                            glm::scale(glm::mat4(1.0f), glm::vec3(world_axis_length));
+    glUniformMatrix4fv(glGetUniformLocation(axis_shader_program, "model"), 1, GL_FALSE, glm::value_ptr(world_model));
+    glDrawArrays(GL_LINES, 0, 6); // 3 lines (X, Y, Z) * 2 vertices each
+
+    // Then, draw per-cube axis widgets using the same transforms as voxels
+    for (size_t cube_idx = 0; cube_idx < cubes_config_.size(); ++cube_idx) {
+        // Get the transform matrices for this cube
+        glm::mat4 local_transform = cube_local_transforms_[cube_idx];
+        glm::mat4 world_transform = cube_world_transforms_[cube_idx];
+
+        // Define the axis widget points in local space (unit vectors along X, Y, Z axes)
+        // Each axis is defined by two points: origin and the axis direction
+        std::vector<glm::vec3> local_axis_points = {
+            glm::vec3(0.0f, 0.0f, 0.0f), // X-axis start
+            glm::vec3(1.0f, 0.0f, 0.0f), // X-axis end
+            glm::vec3(0.0f, 0.0f, 0.0f), // Y-axis start
+            glm::vec3(0.0f, 1.0f, 0.0f), // Y-axis end
+            glm::vec3(0.0f, 0.0f, 0.0f), // Z-axis start
+            glm::vec3(0.0f, 0.0f, 1.0f)  // Z-axis end
+        };
+
+        // Position the axis widget with a small offset from the cube's origin
+        // The world transform already includes the cube position, so we just add a small offset
+        glm::vec3 axis_offset = glm::vec3(-0.3f, -0.3f, -0.3f);
+
+        // Transform each axis point using the same transforms as voxels
+        std::vector<glm::vec3> transformed_axis_points;
+        for (const auto& local_point : local_axis_points) {
+            // Apply local transform first, then world transform
+            glm::vec4 transformed_local = local_transform * glm::vec4(3.0f * (local_point + axis_offset), 1.0f);
+            glm::vec4 world_point = world_transform * transformed_local;
+            transformed_axis_points.push_back(glm::vec3(world_point));
+        }
+
+        // Create a model matrix that just applies the final positioning
+        glm::mat4 model = glm::mat4(1.0f);
+
+        glUniformMatrix4fv(glGetUniformLocation(axis_shader_program, "model"), 1, GL_FALSE, glm::value_ptr(model));
+
+        // Draw the transformed axis widget by drawing individual line segments
+        // We need to draw 3 lines: X, Y, Z axes
+        for (int axis = 0; axis < 3; ++axis) {
+            int start_idx = axis * 2;
+            int end_idx = start_idx + 1;
+
+            // Create temporary vertices for this line segment
+            GLfloat line_vertices[] = {
+                transformed_axis_points[start_idx].x, transformed_axis_points[start_idx].y, transformed_axis_points[start_idx].z,
+                transformed_axis_points[end_idx].x, transformed_axis_points[end_idx].y, transformed_axis_points[end_idx].z
+            };
+
+            // Create temporary colors for this line segment
+            GLfloat line_colors[] = {
+                (axis == 0) ? 1.0f : 0.0f, (axis == 1) ? 1.0f : 0.0f, (axis == 2) ? 1.0f : 0.0f, // Start color
+                (axis == 0) ? 1.0f : 0.0f, (axis == 1) ? 1.0f : 0.0f, (axis == 2) ? 1.0f : 0.0f  // End color
+            };
+
+            // Create temporary VAO for this line
+            GLuint temp_vao, temp_vbo;
+            glGenVertexArrays(1, &temp_vao);
+            glGenBuffers(1, &temp_vbo);
+
+            glBindVertexArray(temp_vao);
+            glBindBuffer(GL_ARRAY_BUFFER, temp_vbo);
+            glBufferData(GL_ARRAY_BUFFER, sizeof(line_vertices) + sizeof(line_colors), nullptr, GL_STATIC_DRAW);
+            glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(line_vertices), line_vertices);
+            glBufferSubData(GL_ARRAY_BUFFER, sizeof(line_vertices), sizeof(line_colors), line_colors);
+
+            // Position attribute
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(GLfloat), (void*)0);
+            glEnableVertexAttribArray(0);
+            // Color attribute
+            glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(GLfloat), (void*)sizeof(line_vertices));
+            glEnableVertexAttribArray(1);
+
+            // Draw the line
+            glDrawArrays(GL_LINES, 0, 2);
+
+            // Clean up temporary VAO
+            glDeleteVertexArrays(1, &temp_vao);
+            glDeleteBuffers(1, &temp_vbo);
+        }
+    }
+
     glBindVertexArray(0);
 }
 
@@ -386,7 +471,11 @@ void VolumetricDisplay::setupOpenGL() {
 
 void VolumetricDisplay::setupVBO() {
     // VOXEL SETUP
-    num_voxels = static_cast<size_t>(width) * height * (length / layer_span) * cubes_config_.size();
+    // Calculate total voxels using individual cube dimensions
+    num_voxels = 0;
+    for (const auto& cube_cfg : cubes_config_) {
+        num_voxels += static_cast<size_t>(cube_cfg.width) * cube_cfg.height * (cube_cfg.length / layer_span);
+    }
 
     GLfloat vertices[] = {
         -0.5f, -0.5f,  0.5f, 0.5f, -0.5f,  0.5f, 0.5f,  0.5f,  0.5f, -0.5f,  0.5f,  0.5f,
@@ -398,18 +487,45 @@ void VolumetricDisplay::setupVBO() {
     };
     vertex_count = 36;
 
+    // For GPU rendering, we'll store the transform matrices per cube
+    // and let the vertex shader apply the transforms
     std::vector<glm::vec3> instance_positions(num_voxels);
-    size_t i = 0;
+
+    // Compute transform matrices for each cube and store as class members
+    cube_local_transforms_.clear();
+    cube_world_transforms_.clear();
     for (const auto& cube_cfg : cubes_config_) {
-        for (int z = 0; z < length; z += layer_span) {
-            for (int y = 0; y < height; ++y) {
-                for (int x = 0; x < width; ++x) {
+        glm::mat4 local_transform = computeCubeLocalTransformMatrix(cube_cfg.world_orientation, glm::vec3(cube_cfg.width, cube_cfg.height, cube_cfg.length));
+        glm::mat4 world_transform = computeCubeToWorldTransformMatrix(cube_cfg.world_orientation, cube_cfg.position);
+
+        cube_local_transforms_.push_back(local_transform);
+        cube_world_transforms_.push_back(world_transform);
+    }
+
+    // For now, compute positions on CPU (will be moved to GPU later)
+    size_t i = 0;
+    int cube_index = 0;
+    for (const auto& cube_cfg : cubes_config_) {
+        glm::mat4 local_transform = cube_local_transforms_[cube_index];
+        glm::mat4 world_transform = cube_world_transforms_[cube_index];
+
+        for (int z = 0; z < cube_cfg.length; z += layer_span) {
+            for (int y = 0; y < cube_cfg.height; ++y) {
+                for (int x = 0; x < cube_cfg.width; ++x) {
                     if (i < num_voxels) {
-                        instance_positions[i++] = glm::vec3(x + 0.5f, y + 0.5f, z + 0.5f) + cube_cfg.position;
+                        // Start with local voxel position
+                        glm::vec3 local_pos = glm::vec3(x + 0.5f, y + 0.5f, z + 0.5f);
+
+                        // Apply transforms using matrices
+                        glm::vec4 transformed_local_pos = local_transform * glm::vec4(local_pos, 1.0f);
+                        glm::vec4 world_pos = world_transform * transformed_local_pos;
+
+                        instance_positions[i++] = glm::vec3(world_pos);
                     }
                 }
             }
         }
+        cube_index++;
     }
 
     std::vector<glm::vec4> instance_colors(num_voxels, glm::vec4(0.0f, 0.0f, 0.0f, 0.0f)); // Use vec4 for RGBA
@@ -506,8 +622,20 @@ void VolumetricDisplay::listenArtNet(int listener_index) {
     LOG(INFO) << "Thread started for cube " << info.cube_index << " on " << info.ip << ":" << info.port;
 
     // This listener only ever writes to the pixel buffer for its assigned cube.
-    size_t pixels_per_cube = static_cast<size_t>(width) * height * length;
-    size_t pixel_buffer_offset = static_cast<size_t>(info.cube_index) * pixels_per_cube;
+    // Calculate pixels per cube using individual cube dimensions
+    size_t pixels_per_cube = 0;
+    size_t pixel_buffer_offset = 0;
+
+    // Calculate offset by summing up all previous cubes' pixel counts
+    for (int i = 0; i < info.cube_index; i++) {
+        const auto& cube_cfg = cubes_config_[i];
+        pixels_per_cube += static_cast<size_t>(cube_cfg.width) * cube_cfg.height * cube_cfg.length;
+    }
+    pixel_buffer_offset = pixels_per_cube;
+
+    // Get the current cube's dimensions
+    const auto& current_cube_cfg = cubes_config_[info.cube_index];
+    pixels_per_cube = static_cast<size_t>(current_cube_cfg.width) * current_cube_cfg.height * current_cube_cfg.length;
 
     while (running) {
         std::array<char, 1024> buffer;
@@ -537,14 +665,14 @@ void VolumetricDisplay::listenArtNet(int listener_index) {
 
             // Map universe to specific Z-index within this controller's range
             int layer = universe / universes_per_layer;
-            
+
             // Check if this layer is within this controller's range
             if (layer >= info.z_indices.size()) {
-                LOG(WARNING) << "Port " << info.port << " received layer " << layer 
+                LOG(WARNING) << "Port " << info.port << " received layer " << layer
                             << " but only has " << info.z_indices.size() << " z_indices";
                 continue;
             }
-            
+
             int actual_z = info.z_indices[layer];  // Map to actual Z-index
             int universe_in_layer = universe % universes_per_layer;
             int start_pixel_in_layer = universe_in_layer * 170;
@@ -554,15 +682,15 @@ void VolumetricDisplay::listenArtNet(int listener_index) {
                 if (18 + i + 2 >= total_length) break;
 
                 int idx_in_layer = start_pixel_in_layer + i / 3;
-                if (idx_in_layer >= width * height) {
+                if (idx_in_layer >= current_cube_cfg.width * current_cube_cfg.height) {
                     continue; // Skip overflow pixels
                 }
 
-                int x = idx_in_layer % width;
-                int y = idx_in_layer / width;
+                int x = idx_in_layer % current_cube_cfg.width;
+                int y = idx_in_layer / current_cube_cfg.width;
 
                 // Write to ONE specific Z-index, not all of them
-                size_t pixel_index = pixel_buffer_offset + static_cast<size_t>(x + y * width + actual_z * width * height);
+                size_t pixel_index = pixel_buffer_offset + static_cast<size_t>(x + y * current_cube_cfg.width + actual_z * current_cube_cfg.width * current_cube_cfg.height);
 
                 if (pixel_index < pixels.size()) {
                     pixels[pixel_index] = {
@@ -717,13 +845,13 @@ glm::vec3 VolumetricDisplay::calculateSceneCenter() {
         return glm::vec3(0.0f);
     }
 
-    // Calculate bounding box of all cubes
+    // Calculate bounding box of all cubes using individual cube dimensions
     glm::vec3 min_bounds = cubes_config_[0].position;
-    glm::vec3 max_bounds = cubes_config_[0].position + glm::vec3(width, height, length);
+    glm::vec3 max_bounds = cubes_config_[0].position + glm::vec3(cubes_config_[0].width, cubes_config_[0].height, cubes_config_[0].length);
 
     for (const auto& cube_cfg : cubes_config_) {
         glm::vec3 cube_min = cube_cfg.position;
-        glm::vec3 cube_max = cube_cfg.position + glm::vec3(width, height, length);
+        glm::vec3 cube_max = cube_cfg.position + glm::vec3(cube_cfg.width, cube_cfg.height, cube_cfg.length);
 
         min_bounds = glm::min(min_bounds, cube_min);
         max_bounds = glm::max(max_bounds, cube_max);
@@ -806,4 +934,43 @@ void VolumetricDisplay::scrollCallback(GLFWwindow* window, double xoffset, doubl
   }
 
   view_update.notify_all();
+}
+
+// Transform matrix computation functions for cube orientation
+glm::mat4 VolumetricDisplay::computeCubeLocalTransformMatrix(const std::vector<std::string>& world_orientation, const glm::vec3& size) {
+    // TODO: Implement cube-local transform matrix
+    // This should handle axis swaps and sign flip compensation
+    // For now, just return identity matrix
+    auto transform_matrix = glm::mat4(0.0f);
+    for (int i = 0; i < 3; i++) {
+        std::string world_axis = world_orientation[i];
+        bool is_negative = world_axis.starts_with("-");
+        if (is_negative) {
+            world_axis = world_axis.substr(1);
+        }
+
+        float axis_coeff = is_negative ? -1.0f : 1.0f;
+
+        if (world_axis == "X") {
+            transform_matrix[0][i] = axis_coeff;
+        } else if (world_axis == "Y") {
+            transform_matrix[1][i] = axis_coeff;
+        } else if (world_axis == "Z") {
+            transform_matrix[2][i] = axis_coeff;
+        }
+
+        if (is_negative) {
+            // Add an offset to the transform matrix
+            transform_matrix[3][i] = size[i];
+        }
+    }
+    transform_matrix[3][3] = 1.0f;
+    return transform_matrix;
+}
+
+glm::mat4 VolumetricDisplay::computeCubeToWorldTransformMatrix(const std::vector<std::string>& world_orientation, const glm::vec3& cube_position) {
+    // TODO: Implement cube-to-world transform matrix
+    // This should handle orientation matrix and world translation
+    // For now, just return translation matrix
+    return glm::translate(glm::mat4(1.0f), cube_position);
 }

@@ -45,8 +45,16 @@ int main(int argc, char *argv[]) {
 
     // Extract values from the JSON object
 
-    // Parse geometry dimensions
-    std::string geometry_str = config["cube_geometry"];
+    // Parse geometry dimensions - support both old and new config formats
+    std::string geometry_str;
+    if (config.contains("world_geometry")) {
+        geometry_str = config["world_geometry"];
+    } else if (config.contains("cube_geometry")) {
+        geometry_str = config["cube_geometry"];
+    } else {
+        throw std::runtime_error("Config must contain either 'world_geometry' or 'cube_geometry' field.");
+    }
+
     int width, height, length;
     if (sscanf(geometry_str.c_str(), "%dx%dx%d", &width, &height, &length) != 3) {
       throw std::runtime_error(
@@ -59,6 +67,39 @@ int main(int argc, char *argv[]) {
             CubeConfig current_cube;
             current_cube.position = glm::vec3(cube_json["position"][0], cube_json["position"][1], cube_json["position"][2]);
 
+            // Parse individual cube dimensions (new format) or use global geometry (old format)
+            if (cube_json.contains("dimensions")) {
+                std::string cube_geometry_str = cube_json["dimensions"];
+                int cube_width, cube_height, cube_length;
+                if (sscanf(cube_geometry_str.c_str(), "%dx%dx%d", &cube_width, &cube_height, &cube_length) != 3) {
+                    throw std::runtime_error("Invalid cube dimensions format. Use WIDTHxHEIGHTxLENGTH (e.g., 20x20x20).");
+                }
+                current_cube.width = cube_width;
+                current_cube.height = cube_height;
+                current_cube.length = cube_length;
+            } else {
+                // Fall back to global geometry for backward compatibility
+                current_cube.width = width;
+                current_cube.height = height;
+                current_cube.length = length;
+            }
+
+            // Parse orientation (optional, defaults to ["-Z", "Y", "X"])
+            if (cube_json.contains("orientation")) {
+                current_cube.orientation.clear();
+                for (const auto& axis : cube_json["orientation"]) {
+                    current_cube.orientation.push_back(axis.get<std::string>());
+                }
+            }
+
+            // Parse world_orientation (optional, defaults to ["X", "Y", "Z"])
+            if (cube_json.contains("world_orientation")) {
+                current_cube.world_orientation.clear();
+                for (const auto& axis : cube_json["world_orientation"]) {
+                    current_cube.world_orientation.push_back(axis.get<std::string>());
+                }
+            }
+
             for (const auto& mapping_json : cube_json["artnet_mappings"]) {
                 ArtNetListenerConfig listener;
                 listener.ip = mapping_json["ip"];
@@ -68,7 +109,7 @@ int main(int argc, char *argv[]) {
                 } else {
                     listener.port = mapping_json["port"];
                 }
-                
+
                 // Parse z_idx array
                 for (const auto& z : mapping_json["z_idx"]) {
                     listener.z_indices.push_back(z);
